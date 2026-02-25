@@ -178,20 +178,38 @@ def grade_prop(
 
 def _get_player_team(prop: PlayerProp, game, df: pd.DataFrame | None = None) -> str:
     """
-    Best-effort: the player's team abbreviation.
-    Extracts from the MATCHUP column of the most recent game log entry.
-    MATCHUP format: 'TOR vs. SAS' (home) or 'TOR @ SAS' (away) — first token is always the player's team.
+    Best-effort: the player's team abbreviation for tonight's game.
+
+    Scans the game log from most-recent to oldest and returns the first entry
+    where the player's team matches one of tonight's two teams.  This correctly
+    handles mid-season transfers: a player who was just acquired may have a
+    cached log full of games from their previous team.  Scanning finds the
+    most-recent game they actually played FOR one of tonight's teams rather
+    than blindly trusting df.iloc[0] (which could be a game with a third team).
+
+    If no log entry matches either team (e.g. player joined today and the
+    cached log is stale pre-trade), we fall back to game.home_team — callers
+    should treat results for such players with lower confidence.
 
     Pass `df` (already-fetched game log) to avoid a duplicate API call.
-    Falls back to home team if log unavailable.
     """
     if df is None:
         df = get_player_game_log(prop.nba_player_id)
+
     if not df.empty and "MATCHUP" in df.columns:
-        matchup = str(df.iloc[0]["MATCHUP"])
-        for sep in (" vs. ", " @ "):
-            if sep in matchup:
-                return matchup.split(sep)[0].strip().upper()
+        home = game.home_team.upper()
+        away = game.away_team.upper()
+
+        for _, row in df.iterrows():
+            matchup = str(row.get("MATCHUP", ""))
+            for sep in (" vs. ", " @ "):
+                if sep in matchup:
+                    team = matchup.split(sep)[0].strip().upper()
+                    if team in (home, away):
+                        return team
+                    break   # separator found but team is a third party; try next row
+
+    # Could not determine team from log (stale cache, brand-new acquisition, etc.)
     return game.home_team
 
 
