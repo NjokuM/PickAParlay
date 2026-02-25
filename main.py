@@ -312,7 +312,7 @@ def _display_and_build_slips(
 )
 @click.option(
     "--season",
-    default="2024-25",
+    default=config.DEFAULT_SEASON,
     show_default=True,
     help="NBA season string.",
 )
@@ -386,7 +386,7 @@ def cli(
 @cli.command("refresh")
 @click.option(
     "--season",
-    default="2024-25",
+    default=config.DEFAULT_SEASON,
     show_default=True,
     help="NBA season string.",
 )

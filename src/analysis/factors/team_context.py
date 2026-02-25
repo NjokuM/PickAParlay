@@ -15,8 +15,10 @@ from src.api.nba_stats import get_team_pace_rank, get_team_recent_form
 def compute(
     team_id: int,
     team_abbr: str,
-    season: str = "2024-25",
+    season: str | None = None,
 ) -> FactorResult:
+    if season is None:
+        season = config.DEFAULT_SEASON
     weight = config.FACTOR_WEIGHTS["team_context"]
 
     form = get_team_recent_form(team_id, season=season)

@@ -15,6 +15,7 @@ from src.api.nba_stats import (
     get_player_game_log,
     get_h2h_record,
     get_team_recent_form,
+    get_player_current_team,
 )
 from src.api.odds_api import get_game_spread
 from src.analysis.context_filter import apply_context_weights
@@ -33,12 +34,14 @@ from src.analysis.scorer import compute_value_score, label_recommendation, detec
 def grade_prop(
     prop: PlayerProp,
     injury_reports: list[InjuryReport],
-    season: str = "2024-25",
+    season: str | None = None,
 ) -> ValuedProp | None:
     """
     Run full multi-factor analysis on a single prop.
     Returns None if the player should be avoided entirely (injured OUT/DOUBTFUL).
     """
+    if season is None:
+        season = config.DEFAULT_SEASON
     game = prop.game
     market_cfg = config.MARKET_MAP.get(prop.market)
     if not market_cfg:
@@ -178,28 +181,38 @@ def grade_prop(
 
 def _get_player_team(prop: PlayerProp, game, df: pd.DataFrame | None = None) -> str:
     """
-    Best-effort: the player's team abbreviation for tonight's game.
+    Determine the player's team abbreviation for tonight's game.
 
-    Scans the game log from most-recent to oldest and returns the first entry
-    where the player's team matches one of tonight's two teams.  This correctly
-    handles mid-season transfers: a player who was just acquired may have a
-    cached log full of games from their previous team.  Scanning finds the
-    most-recent game they actually played FOR one of tonight's teams rather
-    than blindly trusting df.iloc[0] (which could be a game with a third team).
+    Three-tier priority:
+    1. CommonPlayerInfo (authoritative NBA roster) — always reflects the current
+       team regardless of trade date, catches mid-season acquisitions instantly.
+    2. Game log MATCHUP scan — most-recent to oldest, finds the first entry where
+       the player's team matches one of tonight's two teams.  Correct for the
+       vast majority of players and acts as a sanity check on the API result.
+    3. game.home_team fallback — last resort; only reached if both above fail
+       (e.g. player is a brand-new free-agent signing with zero games logged
+       and the CommonPlayerInfo call timed out).
 
-    If no log entry matches either team (e.g. player joined today and the
-    cached log is stale pre-trade), we fall back to game.home_team — callers
-    should treat results for such players with lower confidence.
-
-    Pass `df` (already-fetched game log) to avoid a duplicate API call.
+    Pass `df` (already-fetched game log) to avoid a redundant API call.
     """
+    home = game.home_team.upper()
+    away = game.away_team.upper()
+
+    # --- Tier 1: authoritative current roster ---
+    current = get_player_current_team(prop.nba_player_id)
+    if current:
+        if current == home:
+            return home
+        if current == away:
+            return away
+        # current team is neither home nor away — unusual (player not in this game?)
+        # fall through to game log scan as sanity check
+
+    # --- Tier 2: game log MATCHUP scan ---
     if df is None:
         df = get_player_game_log(prop.nba_player_id)
 
     if not df.empty and "MATCHUP" in df.columns:
-        home = game.home_team.upper()
-        away = game.away_team.upper()
-
         for _, row in df.iterrows():
             matchup = str(row.get("MATCHUP", ""))
             for sep in (" vs. ", " @ "):
@@ -209,7 +222,7 @@ def _get_player_team(prop: PlayerProp, game, df: pd.DataFrame | None = None) -> 
                         return team
                     break   # separator found but team is a third party; try next row
 
-    # Could not determine team from log (stale cache, brand-new acquisition, etc.)
+    # --- Tier 3: fallback ---
     return game.home_team
 
 

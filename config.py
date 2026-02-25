@@ -3,9 +3,32 @@ Central configuration: weights, market mappings, thresholds, constants.
 All tunable parameters live here — nothing is hardcoded in modules.
 """
 import os
+from datetime import date
 from dotenv import load_dotenv
 
 load_dotenv(override=True)  # .env always wins over any pre-existing shell env vars
+
+
+# ---------------------------------------------------------------------------
+# NBA Season auto-detection
+# The NBA regular season starts in October each year.
+#   Oct / Nov / Dec  → season beginning this calendar year  (e.g. Oct 2025 → "2025-26")
+#   Jan – Sep        → season that started last calendar year (e.g. Feb 2026 → "2025-26")
+# ---------------------------------------------------------------------------
+def _nba_season(year_offset: int = 0) -> str:
+    """
+    Return the NBA season string for the current (or offset) season.
+    year_offset=0  → current season  (e.g. "2025-26")
+    year_offset=-1 → previous season (e.g. "2024-25")
+    """
+    today = date.today()
+    base = today.year if today.month >= 10 else today.year - 1
+    start = base + year_offset
+    return f"{start}-{str(start + 1)[2:]}"
+
+
+DEFAULT_SEASON: str = _nba_season(0)    # e.g. "2025-26"
+PREV_SEASON:    str = _nba_season(-1)   # e.g. "2024-25"
 
 # ---------------------------------------------------------------------------
 # API Keys
@@ -190,11 +213,12 @@ NBA_API_SLEEP: float = 0.6         # seconds between nba_api calls
 # ---------------------------------------------------------------------------
 CACHE_TTL: dict[str, int] = {
     "games":        43200,    # 12 hours
-    "game_log":     86400,    # 24 hours (historical, doesn't change)
+    "game_log":     86400,    # 24 hours (historical, doesn't change intra-day)
     "injuries":     2700,     # 45 minutes
     "props":        7200,     # 2 hours
     "team_stats":   86400,    # 24 hours
     "h2h":          86400,    # 24 hours
+    "player_team":  43200,    # 12 hours — shorter than game_log so trades are caught same-day
 }
 
 CACHE_DIR: str = os.path.join(os.path.dirname(__file__), ".cache")

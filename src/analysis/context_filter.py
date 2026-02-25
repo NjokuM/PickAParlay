@@ -24,7 +24,7 @@ def apply_context_weights(
     df: pd.DataFrame,
     current_team_abbr: str,
     tonight_is_b2b: bool,
-    current_season: str = "2024-25",
+    current_season: str | None = None,
 ) -> pd.DataFrame:
     """
     Main entry point. Given a full game log DataFrame, returns a copy
@@ -33,6 +33,8 @@ def apply_context_weights(
     Applies team-transfer weighting and B2B weighting only.
     Home/away filtering is handled per-factor, not here.
     """
+    if current_season is None:
+        current_season = config.DEFAULT_SEASON
     if df.empty:
         return df.copy()
 

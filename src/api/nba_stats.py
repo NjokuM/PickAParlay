@@ -16,6 +16,7 @@ from nba_api.stats.endpoints import (
     PlayerCareerStats,
     LeagueDashTeamStats,
     TeamGameLog,
+    CommonPlayerInfo,
 )
 from nba_api.stats.static import players as nba_players_static
 from nba_api.stats.static import teams as nba_teams_static
@@ -146,10 +147,12 @@ def _team_id_to_abbr(team_id: int) -> str | None:
 
 def get_player_game_log(
     player_id: int,
-    season: str = "2024-25",
+    season: str | None = None,
     season_type: str = "Regular Season",
 ) -> pd.DataFrame:
     """Return player game log as a DataFrame. Cached 24h."""
+    if season is None:
+        season = config.DEFAULT_SEASON
     cache_key = f"gamelog_{player_id}_{season}_{season_type}"
     cached = cache_get(cache_key, config.CACHE_TTL["game_log"])
     if cached:
@@ -180,8 +183,10 @@ def get_player_game_log(
 
 def get_player_game_log_prev_season(
     player_id: int,
-    season: str = "2023-24",
+    season: str | None = None,
 ) -> pd.DataFrame:
+    if season is None:
+        season = config.PREV_SEASON
     return get_player_game_log(player_id, season=season)
 
 
@@ -222,8 +227,10 @@ def _parse_minutes(val: Any) -> float:
 # Player season averages
 # ---------------------------------------------------------------------------
 
-def get_player_season_averages(player_id: int, season: str = "2024-25") -> dict | None:
+def get_player_season_averages(player_id: int, season: str | None = None) -> dict | None:
     """Return per-game season averages dict for key stats."""
+    if season is None:
+        season = config.DEFAULT_SEASON
     df = get_player_game_log(player_id, season=season)
     if df.empty or len(df) < config.MIN_GAMES_PLAYED:
         return None
@@ -242,8 +249,10 @@ def get_player_season_averages(player_id: int, season: str = "2024-25") -> dict 
 # Team stats / pace
 # ---------------------------------------------------------------------------
 
-def get_team_stats(season: str = "2024-25") -> pd.DataFrame:
+def get_team_stats(season: str | None = None) -> pd.DataFrame:
     """League-wide team stats including pace. Cached 24h."""
+    if season is None:
+        season = config.DEFAULT_SEASON
     cache_key = f"team_stats_{season}"
     cached = cache_get(cache_key, config.CACHE_TTL["team_stats"])
     if cached:
@@ -263,8 +272,10 @@ def get_team_stats(season: str = "2024-25") -> pd.DataFrame:
     return df
 
 
-def get_team_pace_rank(team_id: int, season: str = "2024-25") -> tuple[float, int] | None:
+def get_team_pace_rank(team_id: int, season: str | None = None) -> tuple[float, int] | None:
     """Return (pace_value, pace_rank) for a team. Rank 1 = fastest."""
+    if season is None:
+        season = config.DEFAULT_SEASON
     df = get_team_stats(season)
     if df.empty or "TEAM_ID" not in df.columns:
         return None
@@ -279,13 +290,15 @@ def get_team_pace_rank(team_id: int, season: str = "2024-25") -> tuple[float, in
     return pace, rank
 
 
-def _get_raw_team_game_log(team_id: int, season: str = "2024-25") -> pd.DataFrame:
+def _get_raw_team_game_log(team_id: int, season: str | None = None) -> pd.DataFrame:
     """
     Shared cached TeamGameLog fetch.
     get_team_recent_form, get_h2h_record, and get_team_avg_win_margin all use
     this helper so each team's season log is only fetched ONCE per run,
     regardless of how many times downstream functions are called.
     """
+    if season is None:
+        season = config.DEFAULT_SEASON
     cache_key = f"raw_team_log_{team_id}_{season}"
     cached = cache_get(cache_key, config.CACHE_TTL["game_log"])
     if cached:
@@ -302,8 +315,10 @@ def _get_raw_team_game_log(team_id: int, season: str = "2024-25") -> pd.DataFram
     return df
 
 
-def get_team_recent_form(team_id: int, season: str = "2024-25", last_n: int = 5) -> dict:
+def get_team_recent_form(team_id: int, season: str | None = None, last_n: int = 5) -> dict:
     """Return recent W/L record and back-to-back flag."""
+    if season is None:
+        season = config.DEFAULT_SEASON
     cache_key = f"team_form_{team_id}_{season}"
     cached = cache_get(cache_key, config.CACHE_TTL["game_log"])
     # Guard: only return cached value if it's the processed dict (not old raw-records list)
@@ -356,11 +371,13 @@ def _compute_streak(wl_list: list[str]) -> str:
 # Head-to-head team records
 # ---------------------------------------------------------------------------
 
-def get_h2h_record(team_id: int, opponent_abbr: str, season: str = "2024-25") -> dict:
+def get_h2h_record(team_id: int, opponent_abbr: str, season: str | None = None) -> dict:
     """
     Return W/L record and average margin for team_id vs opponent this season.
     Also fetches last season for a broader sample.
     """
+    if season is None:
+        season = config.DEFAULT_SEASON
     cache_key = f"h2h_{team_id}_{opponent_abbr}_{season}"
     cached = cache_get(cache_key, config.CACHE_TTL["h2h"])
     if cached:
@@ -396,8 +413,10 @@ def get_h2h_record(team_id: int, opponent_abbr: str, season: str = "2024-25") ->
 # Average winning margin (for blowout risk calculation)
 # ---------------------------------------------------------------------------
 
-def get_team_avg_win_margin(team_id: int, season: str = "2024-25") -> float:
+def get_team_avg_win_margin(team_id: int, season: str | None = None) -> float:
     """Average point margin on wins only — indicates how dominant a team is."""
+    if season is None:
+        season = config.DEFAULT_SEASON
     cache_key = f"win_margin_{team_id}_{season}"
     cached = cache_get(cache_key, config.CACHE_TTL["team_stats"])
     if cached is not None:
@@ -416,3 +435,36 @@ def get_team_avg_win_margin(team_id: int, season: str = "2024-25") -> float:
     margin = float(wins["PLUS_MINUS"].mean())
     cache_set(cache_key, margin)
     return round(margin, 1)
+
+
+# ---------------------------------------------------------------------------
+# Current player team (authoritative roster lookup)
+# ---------------------------------------------------------------------------
+
+def get_player_current_team(player_id: int) -> str | None:
+    """
+    Return the player's current team abbreviation from the NBA API.
+
+    Uses CommonPlayerInfo which always reflects the current roster assignment,
+    regardless of trade date.  Cached for 12h so same-day trades are caught
+    on the next refresh without hammering the API.
+
+    Returns None if the player is not on an active roster (free agent, G-League,
+    international) or if the request fails.
+    """
+    cache_key = f"player_team_{player_id}"
+    cached = cache_get(cache_key, config.CACHE_TTL["player_team"])
+    if cached:
+        return str(cached)
+
+    _sleep()
+    try:
+        info = CommonPlayerInfo(player_id=player_id).get_normalized_dict()
+        row = info.get("CommonPlayerInfo", [{}])[0]
+        abbr = str(row.get("TEAM_ABBREVIATION", "")).upper().strip()
+        if abbr and abbr not in ("", "0"):
+            cache_set(cache_key, abbr)
+            return abbr
+    except Exception:
+        pass
+    return None

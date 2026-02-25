@@ -28,7 +28,7 @@ def compute(
     market: str,
     home_team_id: int | None = None,
     away_team_id: int | None = None,
-    season: str = "2024-25",
+    season: str | None = None,
 ) -> FactorResult:
     """
     spread: absolute value of the point spread (e.g. 12.5 for OKC -12.5).
@@ -38,6 +38,8 @@ def compute(
     player_is_starter: False = bench player → heavier penalty.
     market: prop market key (e.g. "player_points").
     """
+    if season is None:
+        season = config.DEFAULT_SEASON
     weight = config.FACTOR_WEIGHTS["blowout_risk"]
 
     evidence: list[str] = []
