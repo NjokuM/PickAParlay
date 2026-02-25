@@ -1,0 +1,8 @@
+nba_api>=1.4.1
+requests>=2.31.0
+pandas>=2.1.0
+rich>=13.7.0
+click>=8.1.7
+python-dotenv>=1.0.0
+thefuzz>=0.22.1
+python-levenshtein>=0.23.0
