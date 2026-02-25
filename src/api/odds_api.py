@@ -16,6 +16,7 @@ from src.cache import (
     get as cache_get,
     set as cache_set,
     record_api_request,
+    sync_credits_from_header,
     get_credits_remaining,
 )
 from src.models import NBAGame, PlayerProp
@@ -33,11 +34,21 @@ def _get(path: str, params: dict) -> dict | list | None:
     url = f"{config.ODDS_API_BASE_URL}{path}"
     try:
         resp = requests.get(url, params=params, timeout=15)
-        # Track remaining credits from response headers
-        remaining = resp.headers.get("x-requests-remaining")
-        used = resp.headers.get("x-requests-used")
-        if used:
-            record_api_request(0)  # We'll let the header track it
+        # Sync credit counter directly from the API's ground-truth headers.
+        # x-requests-used reflects actual billing (e.g. prop fetches cost per market),
+        # so this is always more accurate than our manual +1 counting.
+        raw_used = resp.headers.get("x-requests-used")
+        raw_remaining = resp.headers.get("x-requests-remaining")
+        if raw_used is not None:
+            try:
+                sync_credits_from_header(
+                    used=int(raw_used),
+                    remaining=int(raw_remaining) if raw_remaining is not None else None,
+                )
+            except ValueError:
+                record_api_request(1)   # header malformed — fall back to +1
+        else:
+            record_api_request(1)       # no header at all — fall back to +1
         resp.raise_for_status()
         return resp.json()
     except requests.RequestException:
@@ -116,7 +127,6 @@ def get_events() -> list[dict]:
         f"/sports/{config.ODDS_SPORT}/events",
         {"regions": config.ODDS_REGIONS},
     )
-    record_api_request(1)
     if not data:
         return []
 
@@ -181,7 +191,6 @@ def get_game_spread(event_id: str) -> float | None:
             "bookmakers": config.PREFERRED_BOOKMAKER,
         },
     )
-    record_api_request(1)
     if not data:
         return None
 
@@ -233,7 +242,6 @@ def get_player_props_for_event(
             "markets": markets_str,
         },
     )
-    record_api_request(1)
     if not data:
         return []
 

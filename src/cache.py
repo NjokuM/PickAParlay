@@ -27,7 +27,7 @@ class _Encoder(json.JSONEncoder):
         return super().default(obj)
 
 _COUNTER_FILE = os.path.join(config.CACHE_DIR, "api_credits.json")
-_MONTHLY_LIMIT = 500
+_MONTHLY_LIMIT_DEFAULT = 500   # fallback if we haven't seen a response header yet
 
 
 def _ensure_dir() -> None:
@@ -122,12 +122,39 @@ def _current_month() -> str:
 
 
 def record_api_request(n: int = 1) -> None:
-    """Call this after every Odds API HTTP request (not cache hit)."""
+    """
+    Fallback: increment the local counter by n.
+    Used only when the API response headers are unavailable.
+    Prefer sync_credits_from_header() for accuracy.
+    """
     counter = _load_counter()
     if counter["month"] != _current_month():
         counter = {"month": _current_month(), "used": 0}
     counter["used"] += n
     _save_counter(counter)
+
+
+def sync_credits_from_header(used: int, remaining: int | None = None) -> None:
+    """
+    Overwrite the local counter with ground-truth values from the
+    x-requests-used (and optionally x-requests-remaining) response headers.
+
+    This is called after every successful Odds API HTTP response so we always
+    reflect reality rather than our own (inaccurate) manual counting.
+    If remaining is provided we also store the inferred monthly limit so the
+    credits_summary() display is accurate for any plan tier.
+    """
+    _ensure_dir()
+    counter = {"month": _current_month(), "used": used}
+    if remaining is not None:
+        counter["limit"] = used + remaining   # e.g. 47 used + 453 remaining = 500 limit
+    _save_counter(counter)
+
+
+def _get_monthly_limit() -> int:
+    """Return the stored limit (learned from headers) or the default fallback."""
+    counter = _load_counter()
+    return counter.get("limit", _MONTHLY_LIMIT_DEFAULT)
 
 
 def get_credits_used() -> int:
@@ -138,14 +165,15 @@ def get_credits_used() -> int:
 
 
 def get_credits_remaining() -> int:
-    return max(0, _MONTHLY_LIMIT - get_credits_used())
+    return max(0, _get_monthly_limit() - get_credits_used())
 
 
 def credits_summary() -> str:
     used = get_credits_used()
-    remaining = get_credits_remaining()
-    pct = (used / _MONTHLY_LIMIT) * 100
-    return f"Odds API: {used}/{_MONTHLY_LIMIT} used ({pct:.0f}%) | {remaining} remaining this month"
+    limit = _get_monthly_limit()
+    remaining = max(0, limit - used)
+    pct = (used / limit) * 100 if limit else 0
+    return f"Odds API: {used}/{limit} used ({pct:.0f}%) | {remaining} remaining this month"
 
 
 def warn_if_low(threshold: int = 50) -> str | None:
