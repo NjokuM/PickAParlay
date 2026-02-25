@@ -17,6 +17,7 @@ def build_slips(
     target_decimal: float,
     n_legs: int | None = None,
     min_score: float | None = None,
+    bookmaker: str | None = None,
 ) -> list[BetSlip]:
     """
     Main entry point.
@@ -25,8 +26,18 @@ def build_slips(
     target_decimal: e.g. 5.0 for a 4/1 bet
     n_legs: if specified, only build slips of exactly this length
     min_score: optional override for minimum value score cutoff
+    bookmaker: if set, only include props from this bookmaker.
+               "paddypower" matches is_paddy_power=True; any other string matches
+               prop.bookmaker exactly. None = no filter.
     Returns top MAX_SLIPS_RETURNED slips sorted by slip_score descending.
     """
+    # --- Bookmaker filter ---
+    if bookmaker:
+        if bookmaker.lower() == "paddypower":
+            valued_props = [vp for vp in valued_props if vp.prop.is_paddy_power]
+        else:
+            valued_props = [vp for vp in valued_props if vp.prop.bookmaker == bookmaker.lower()]
+
     threshold = min_score if min_score is not None else config.MIN_VALUE_SCORE
     eligible = [vp for vp in valued_props if vp.value_score >= threshold]
     eligible.sort(key=lambda vp: vp.value_score, reverse=True)

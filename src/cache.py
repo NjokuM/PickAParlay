@@ -73,6 +73,34 @@ def invalidate(key: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Scored-props persistence (ValuedProp serialised as plain dicts)
+# ---------------------------------------------------------------------------
+
+def save_scored_props(prop_dicts: list[dict], date_str: str | None = None) -> None:
+    """
+    Persist a list of ValuedProp dicts (output of dataclasses.asdict) to cache.
+    Keyed by date so each day's grade run is stored independently.
+    TTL is 36 hours — long enough to survive overnight but fresh daily.
+    """
+    if date_str is None:
+        date_str = date.today().isoformat()
+    set(f"scored_props_{date_str}", prop_dicts)
+
+
+def load_scored_props_raw(
+    date_str: str | None = None,
+    max_age_seconds: int = 129_600,   # 36 hours
+) -> list[dict] | None:
+    """
+    Return the cached list of ValuedProp dicts, or None if absent / stale.
+    Callers are responsible for reconstructing ValuedProp objects from the dicts.
+    """
+    if date_str is None:
+        date_str = date.today().isoformat()
+    return get(f"scored_props_{date_str}", max_age_seconds)
+
+
+# ---------------------------------------------------------------------------
 # Odds API credit counter
 # ---------------------------------------------------------------------------
 

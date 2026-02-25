@@ -198,6 +198,7 @@ CACHE_TTL: dict[str, int] = {
 }
 
 CACHE_DIR: str = os.path.join(os.path.dirname(__file__), ".cache")
+DATABASE_PATH: str = os.path.join(os.path.dirname(__file__), "pickaparlay.db")
 
 # ---------------------------------------------------------------------------
 # Misc
