@@ -674,9 +674,10 @@ def _legs_summary(legs: list[dict]) -> str:
         result = leg.get("leg_result")
         icon = {"HIT": "[green]✓[/green]", "MISS": "[red]✗[/red]"}.get(result, "[dim]·[/dim]")
         market_label = leg.get("market_label") or leg.get("market", "?")
+        side_label = leg.get("side", "over").upper()
         parts.append(
             f"{icon} [bold]{leg.get('player_name', '?')}[/bold] "
-            f"OVER {leg.get('line', '?')} {market_label}"
+            f"{side_label} {leg.get('line', '?')} {market_label}"
         )
     return "\n".join(parts)
 

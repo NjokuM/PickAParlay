@@ -132,6 +132,7 @@ export default function HistoryPage() {
                           ["Team Context", leg.score_team_context],
                           ["Season Avg", leg.score_season_avg],
                           ["Blowout Risk", leg.score_blowout_risk],
+                          ["Volume & Usage", leg.score_volume_context],
                         ].map(([label, val]) =>
                           val != null ? (
                             <div key={label as string} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}>

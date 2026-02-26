@@ -1,10 +1,11 @@
 """
-Factor 7: Blowout Risk (3%)
+Factor 7: Blowout Risk (1%)
 Uses the game spread + H2H margin history + team average win margin
 to estimate how likely this game is to become a blowout.
 
-A blowout = starters pulled early = counting stats cut short.
-Penalises counting-stat props proportionally to risk.
+Direction-aware:
+  OVER:  high blowout risk = starters pulled early = stats cut short = BAD (low score)
+  UNDER: high blowout risk = starters sit = harder to accumulate stats = GOOD (high score)
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ def compute(
     home_team_id: int | None = None,
     away_team_id: int | None = None,
     season: str | None = None,
+    side: str = "over",
 ) -> FactorResult:
     """
     spread: absolute value of the point spread (e.g. 12.5 for OKC -12.5).
@@ -107,6 +109,16 @@ def compute(
     else:
         score = round((1.0 - blowout_risk * 0.3) * 100, 1)  # Mild penalty at low risk
         evidence.append(f"Blowout risk within acceptable range ({blowout_risk:.0%})")
+
+    # For UNDER: use blowout_risk directly — 50 is neutral (no risk), scores up with risk.
+    # A simple inversion (100 - over_score) would make the neutral baseline 0, which is wrong.
+    # Instead: neutral (risk=0) → 50, maximum risk (risk=1.0) → 90
+    if side == "under":
+        score = round(min(100.0, 50.0 + blowout_risk * 40.0), 1)
+        evidence.append(
+            f"UNDER: blowout risk {blowout_risk:.0%} → favours UNDER "
+            f"(starters may sit early, fewer stats)"
+        )
 
     return FactorResult(
         name="Blowout Risk",

@@ -1,6 +1,10 @@
 """
-Factor 5: Team Context (7%)
-Team pace, recent win/loss form, back-to-back rest penalty.
+Factor 5: Team Context (5%)
+Team pace, recent win/loss form, back-to-back rest/fatigue — direction-aware.
+
+OVER:  fast pace + good form + no B2B = high score
+UNDER: slow pace = fewer possessions = harder to exceed line (pace inverted);
+       B2B fatigue = fewer stat opportunities = slight boost for UNDER
 """
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ def compute(
     team_id: int,
     team_abbr: str,
     season: str | None = None,
+    side: str = "over",
 ) -> FactorResult:
     if season is None:
         season = config.DEFAULT_SEASON
@@ -39,21 +44,35 @@ def compute(
     else:
         evidence.append("Recent form: no data")
 
-    # Pace contribution — higher pace = more possessions = more counting stats
+    # Pace contribution — direction-aware
     if pace_data:
         pace_val, pace_rank = pace_data
         n_teams = 30
-        # Rank 1 = fastest → score near 100; Rank 30 = slowest → score near 10
-        pace_score = ((n_teams - pace_rank) / (n_teams - 1)) * 100
+        pace_label = "fast" if pace_rank <= 10 else "mid" if pace_rank <= 20 else "slow"
+        # Rank 1 = fastest → over_pace_score near 100; Rank 30 = slowest → near 0
+        over_pace_score = ((n_teams - pace_rank) / (n_teams - 1)) * 100
+        if side == "under":
+            # Slow pace = fewer possessions = harder to accumulate stats = GOOD for UNDER
+            pace_score = 100.0 - over_pace_score
+            evidence.append(
+                f"Pace: {pace_val:.1f} (rank {pace_rank}/30 — {pace_label})"
+                + (" — slow pace favours UNDER" if pace_rank > 20 else "")
+            )
+        else:
+            pace_score = over_pace_score
+            evidence.append(f"Pace: {pace_val:.1f} (rank {pace_rank}/30 — {pace_label})")
         score = 0.6 * score + 0.4 * pace_score
-        evidence.append(f"Pace: {pace_val:.1f} (rank {pace_rank}/30 — {'fast' if pace_rank <= 10 else 'mid' if pace_rank <= 20 else 'slow'})")
     else:
         evidence.append("Pace data unavailable")
 
-    # Back-to-back penalty
+    # Back-to-back: rest penalty for OVER, slight boost for UNDER (fatigue = fewer opportunities)
     if form.get("back_to_back"):
-        score *= 0.85
-        evidence.append("⚠️  Playing on back-to-back (rest penalty applied)")
+        if side == "under":
+            score = min(100.0, score * 1.10)
+            evidence.append("B2B tonight — fatigue favours UNDER (fewer stat opportunities)")
+        else:
+            score *= 0.85
+            evidence.append("⚠️  Playing on back-to-back (rest penalty applied)")
     else:
         evidence.append("No back-to-back tonight ✓")
 

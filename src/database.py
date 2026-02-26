@@ -85,6 +85,7 @@ def init_db() -> None:
                 score_team_context   REAL,
                 score_season_avg     REAL,
                 score_blowout_risk   REAL,
+                score_volume_context REAL,
                 -- Actual outcome per leg
                 leg_result           TEXT    -- HIT | MISS | NULL
             );
@@ -94,6 +95,12 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_slip_legs_slip_id
                 ON slip_legs(slip_id);
         """)
+
+        # Migration: add score_volume_context for databases created before this column existed
+        try:
+            conn.execute("ALTER TABLE slip_legs ADD COLUMN score_volume_context REAL")
+        except Exception:
+            pass  # Column already exists — SQLite raises OperationalError in that case
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +185,9 @@ def save_slip(
                    (slip_id, player_name, market, market_label, line, over_odds,
                     bookmaker, is_paddy_power, value_score,
                     score_consistency, score_vs_opponent, score_home_away,
-                    score_injury, score_team_context, score_season_avg, score_blowout_risk)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    score_injury, score_team_context, score_season_avg, score_blowout_risk,
+                    score_volume_context)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     slip_id,
                     vp.prop.player_name,
@@ -197,6 +205,7 @@ def save_slip(
                     factor_scores.get("Team Context"),
                     factor_scores.get("Season Average"),
                     factor_scores.get("Blowout Risk"),
+                    factor_scores.get("Volume & Usage"),
                 ),
             )
 

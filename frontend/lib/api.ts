@@ -104,6 +104,7 @@ export interface SavedLeg {
   score_team_context: number | null;
   score_season_avg: number | null;
   score_blowout_risk: number | null;
+  score_volume_context: number | null;
   leg_result: "HIT" | "MISS" | null;
 }
 

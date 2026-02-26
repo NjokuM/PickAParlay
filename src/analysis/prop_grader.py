@@ -117,7 +117,7 @@ def grade_prop(
 
     # --- Factor 5: Team Context ---
     team_id = game.home_team_id if tonight_is_home else game.away_team_id
-    f_team = team_context.compute(team_id, player_team_abbr, season=season)
+    f_team = team_context.compute(team_id, player_team_abbr, season=season, side=side)
 
     # --- Factor 6: Season Average ---
     f_season = season_avg.compute(df_raw, stat_col, prop.line, side=side)
@@ -139,6 +139,7 @@ def grade_prop(
         home_team_id=game.home_team_id,
         away_team_id=game.away_team_id,
         season=season,
+        side=side,
     )
 
     # --- Factor 8: Volume & Usage ---

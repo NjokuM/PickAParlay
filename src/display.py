@@ -137,9 +137,10 @@ def print_valued_prop(vp: ValuedProp, rank: int | None = None) -> None:
     rec_col = _rec_colour(vp.recommendation)
 
     rank_str = f"#{rank} " if rank else ""
+    side_label = vp.backing_data.get("side", "over").upper()
     title = (
         f"{rank_str}[bold]{vp.prop.player_name}[/bold]  "
-        f"OVER {vp.prop.line} {market_label}  "
+        f"{side_label} {vp.prop.line} {market_label}  "
         f"[cyan]@{vp.prop.over_odds_decimal:.2f}[/cyan]  {bookie_tag}  "
         f"[{score_col}][{vp.recommendation}: {vp.value_score}/100][/{score_col}]"
     )
@@ -194,9 +195,10 @@ def print_slip(slip: BetSlip, rank: int) -> None:
         rec = vp.recommendation
         suspicious_tag = "  [bold yellow]⚠ CHECK LINE[/bold yellow]" if vp.suspicious_line else ""
 
+        side_label = vp.backing_data.get("side", "over").upper()
         lines.append(
             f"  {i}. [bold]{vp.prop.player_name}[/bold]  "
-            f"OVER {vp.prop.line} {market_label}  "
+            f"{side_label} {vp.prop.line} {market_label}  "
             f"[cyan]@{vp.prop.over_odds_decimal:.2f}[/cyan]  {bookie_tag}  "
             f"[{score_col_leg}][{rec}: {vp.value_score}/100][/{score_col_leg}]"
             f"{suspicious_tag}"
