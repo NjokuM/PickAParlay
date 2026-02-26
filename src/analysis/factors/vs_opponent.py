@@ -25,6 +25,7 @@ def compute(
     opponent_abbr: str,
     current_team_abbr: str,
     h2h_team_record: dict | None = None,
+    side: str = "over",
 ) -> FactorResult:
     """
     df: full game log (context_filter will slice it to vs-opponent rows).
@@ -58,16 +59,22 @@ def compute(
     if total_weight == 0:
         return _no_data_result(weight, opponent_abbr)
 
+    # Flip hit condition for UNDER bets
+    _hit = (lambda v: v < line) if side == "under" else (lambda v: v > line)
+
     weighted_hit_rate = sum(
-        w * int(v > line) for v, w in zip(values, ctx_weights)
+        w * int(_hit(v)) for v, w in zip(values, ctx_weights)
     ) / total_weight
 
     # Weighted average
     weighted_avg = sum(v * w for v, w in zip(values, ctx_weights)) / total_weight
 
-    # Score: hit rate (60%) + how far above the line the avg sits (40%)
-    avg_above = max(0.0, (weighted_avg - line) / line) if line > 0 else 0.0
-    avg_score = min(1.0, 0.5 + avg_above)
+    # Score: hit rate (60%) + how far above/below the line the avg sits (40%)
+    if side == "under":
+        avg_diff = max(0.0, (line - weighted_avg) / line) if line > 0 else 0.0
+    else:
+        avg_diff = max(0.0, (weighted_avg - line) / line) if line > 0 else 0.0
+    avg_score = min(1.0, 0.5 + avg_diff)
     score = (0.6 * weighted_hit_rate + 0.4 * avg_score) * 100.0
 
     # Blend with team H2H context (adds context to individual stats)
@@ -78,10 +85,16 @@ def compute(
     eff_sample = effective_sample_size(h2h_df)
     confidence = compute_confidence(eff_sample, config.MIN_SAMPLE["vs_opponent"])
 
+    # Blend score toward neutral (50) based on sample size confidence
+    # Prevents extreme scores (e.g. 19/100) from just 1 game of H2H history
+    score = 50.0 + (score - 50.0) * confidence
+    score = round(min(100.0, max(0.0, score)), 1)
+
     vals_str = ", ".join(str(round(v, 1)) for v in values)
-    hit_count = sum(1 for v in values if v > line)
+    hit_count = sum(1 for v in values if _hit(v))
+    direction = "below" if side == "under" else "hit"
     evidence = [
-        f"vs {opponent_abbr}: {len(values)} game(s), avg {weighted_avg:.1f}, {hit_count}/{len(values)} hit",
+        f"vs {opponent_abbr}: {len(values)} game(s), avg {weighted_avg:.1f}, {hit_count}/{len(values)} {direction} line",
         f"Values: {vals_str}",
         _team_h2h_evidence(h2h_team_record, opponent_abbr),
     ]

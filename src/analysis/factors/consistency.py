@@ -1,7 +1,7 @@
 """
 Factor 1: Consistency (38%)
-Floor analysis + recency-weighted hit rate over last 10 games.
-Primary signal: is the player's floor above the line?
+Recency-weighted hit rate (60%) + floor/ceiling (25%) + weighted mean vs line (15%).
+The mean component softens the impact of a single bad game tanking the floor contribution.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ def compute(
     df: pd.DataFrame,
     stat_col: str,
     line: float,
+    side: str = "over",
 ) -> FactorResult:
     """
     df: context-filtered game log with CTX_WEIGHT column.
@@ -60,19 +61,40 @@ def compute(
             confidence=0.0,
         )
 
-    floor_value = min(values)
-    hits = [v > line for v in values]
+    # For UNDER, a "hit" is staying below the line; the ceiling (max) replaces the floor (min)
+    if side == "under":
+        ceiling_value = max(values)
+        hits = [v < line for v in values]
+    else:
+        floor_value = min(values)
+        hits = [v > line for v in values]
 
     # Weighted hit rate
     weighted_hit_rate = sum(w * int(h) for w, h in zip(weights, hits))
 
-    # Floor contribution
-    if floor_value >= line:
-        floor_contrib = 1.0
-    else:
-        floor_contrib = max(0.0, floor_value / line) if line > 0 else 0.0
+    # Weighted mean
+    weighted_mean = sum(w * v for w, v in zip(weights, values))
 
-    score = (0.5 * weighted_hit_rate + 0.5 * floor_contrib) * 100.0
+    if side == "under":
+        # Ceiling contribution: how far below the line is the player's ceiling?
+        if ceiling_value < line:
+            bound_contrib = 1.0  # Even best game stays under — very favourable
+        else:
+            bound_contrib = max(0.0, (2 * line - ceiling_value) / line) if line > 0 else 0.0
+        # Mean contribution (symmetric to OVER): high when mean is well below the line
+        mean_contrib = min(1.0, max(0.0, (2 * line - weighted_mean) / line * 0.5)) if line > 0 else 0.5
+    else:
+        floor_value = min(values)
+        # Floor contribution: how far above the line is the player's floor?
+        if floor_value >= line:
+            bound_contrib = 1.0
+        else:
+            bound_contrib = max(0.0, floor_value / line) if line > 0 else 0.0
+        # Mean contribution: neutral (0.5) when mean = line, 1.0 when mean = 2×line
+        mean_contrib = min(1.0, max(0.0, weighted_mean / line * 0.5)) if line > 0 else 0.5
+
+    # 60% hit rate / 25% floor-or-ceiling / 15% mean vs line
+    score = (0.60 * weighted_hit_rate + 0.25 * bound_contrib + 0.15 * mean_contrib) * 100.0
     score = round(min(100.0, score), 1)
 
     eff_sample = effective_sample_size(valid)
@@ -83,10 +105,18 @@ def compute(
     hit_count = sum(hits)
     total = len(values)
     ot_flag = " (OT games excluded)" if "IS_OT" in df.columns else ""
+    if side == "under":
+        bound_label = f"Ceiling={round(ceiling_value, 1)} {'✓ below line' if ceiling_value < line else '✗ above line'}"
+        direction_label = f"{hit_count}/{total} stayed below {line} (line)"
+    else:
+        floor_value = min(values)
+        bound_label = f"Floor={round(floor_value, 1)} {'✓ above line' if floor_value >= line else '✗ below line'}"
+        direction_label = f"{hit_count}/{total} exceeded {line} (line)"
+    mean_vs_line = "above" if weighted_mean >= line else "below"
     evidence = [
         f"Last {total} games{ot_flag}: {vals_str}",
-        f"{hit_count}/{total} exceeded {line} (line)",
-        f"Floor={round(floor_value, 1)} {'✓ above line' if floor_value >= line else '✗ below line'}",
+        direction_label,
+        f"Mean={round(weighted_mean, 1)} ({mean_vs_line} {line}), {bound_label}",
         f"Weighted hit rate: {weighted_hit_rate:.0%}",
     ]
     if confidence < 1.0:
@@ -99,10 +129,13 @@ def compute(
         evidence=evidence,
         data={
             "values": values,
-            "floor": floor_value,
+            "floor": min(values) if side == "over" else None,
+            "ceiling": max(values) if side == "under" else None,
+            "mean": round(weighted_mean, 2),
             "hit_rate": weighted_hit_rate,
             "hits": hit_count,
             "total": total,
+            "side": side,
         },
         confidence=confidence,
     )

@@ -61,12 +61,12 @@ def build_slips(
         slips = _search_combinations(eligible, target_decimal, n)
         all_slips.extend(slips)
 
-    # Deduplicate by frozenset of player names + markets
+    # Deduplicate by frozenset of (player, market, side) tuples
     seen: set[frozenset] = set()
     unique_slips: list[BetSlip] = []
     for slip in sorted(all_slips, key=lambda s: s.total_value_score, reverse=True):
         key = frozenset(
-            (leg.valued_prop.prop.player_name, leg.valued_prop.prop.market)
+            (leg.valued_prop.prop.player_name, leg.valued_prop.prop.market, leg.side)
             for leg in slip.legs
         )
         if key not in seen:
@@ -76,12 +76,20 @@ def build_slips(
     return unique_slips[: config.MAX_SLIPS_RETURNED]
 
 
+def _prop_decimal_odds(vp: ValuedProp) -> float:
+    """Return the correct decimal odds for this prop based on its graded side."""
+    side = vp.backing_data.get("side", "over")
+    if side == "under" and vp.prop.under_odds_decimal and vp.prop.under_odds_decimal > 1.0:
+        return vp.prop.under_odds_decimal
+    return vp.prop.over_odds_decimal
+
+
 def _estimate_leg_counts(eligible: list[ValuedProp], target_decimal: float) -> list[int]:
     """Estimate how many legs needed to reach target_decimal."""
     if not eligible:
         return [3]
 
-    avg_odds = sum(vp.prop.over_odds_decimal for vp in eligible) / len(eligible)
+    avg_odds = sum(_prop_decimal_odds(vp) for vp in eligible) / len(eligible)
     if avg_odds <= 1.0:
         return [3, 4]
 
@@ -134,12 +142,21 @@ def _search_combinations(
     results: list[tuple[float, BetSlip]] = []
 
     for combo in combinations(eligible, n):
-        # Constraint: max 2 props per player
+        # Constraint: max 2 props per player (but not OVER+UNDER same market)
         player_counts: dict[str, int] = {}
+        player_market_sides: dict[tuple, set] = {}
+        skip = False
         for vp in combo:
             name = vp.prop.player_name
             player_counts[name] = player_counts.get(name, 0) + 1
-        if any(c > 2 for c in player_counts.values()):
+            # Track (player, market) → set of sides; reject if same player has OVER+UNDER same market
+            key = (name, vp.prop.market)
+            sides = player_market_sides.setdefault(key, set())
+            sides.add(vp.backing_data.get("side", "over"))
+            if len(sides) > 1:  # both over and under on same market for same player
+                skip = True
+                break
+        if skip or any(c > 2 for c in player_counts.values()):
             continue
 
         # Constraint: no combo market + component market for the same player
@@ -148,7 +165,7 @@ def _search_combinations(
 
         combined_odds = 1.0
         for vp in combo:
-            combined_odds *= vp.prop.over_odds_decimal
+            combined_odds *= _prop_decimal_odds(vp)
 
         # Odds proximity filter
         proximity = abs(combined_odds - target_decimal) / target_decimal
@@ -171,8 +188,8 @@ def _make_slip(
     legs = [
         BetLeg(
             valued_prop=vp,
-            side="over",
-            decimal_odds=vp.prop.over_odds_decimal,
+            side=vp.backing_data.get("side", "over"),
+            decimal_odds=_prop_decimal_odds(vp),
         )
         for vp in combo
     ]
@@ -218,8 +235,9 @@ def _build_summary(legs: list[BetLeg], combined_odds: float) -> str:
         vp = leg.valued_prop
         market_label = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
         bookie = "[PP]" if vp.prop.is_paddy_power else f"[{vp.prop.bookmaker}]"
+        direction = leg.side.upper()  # "OVER" or "UNDER"
         parts.append(
-            f"{vp.prop.player_name} OVER {vp.prop.line} {market_label} "
-            f"@{vp.prop.over_odds_decimal:.2f} {bookie}"
+            f"{vp.prop.player_name} {direction} {vp.prop.line} {market_label} "
+            f"@{leg.decimal_odds:.2f} {bookie}"
         )
     return " | ".join(parts) + f" → {combined_odds:.2f}"

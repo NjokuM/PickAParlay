@@ -8,6 +8,10 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
+
+# NBA uses Eastern Time for all game scheduling
+_ET = ZoneInfo("America/New_York")
 
 import pandas as pd
 from nba_api.stats.endpoints import (
@@ -81,7 +85,10 @@ def get_todays_games() -> list[NBAGame]:
     Return NBAGame objects for games that have NOT yet started
     (or start within TIP_OFF_BUFFER_MINUTES).
     """
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Use Eastern Time — NBA schedules games by ET date.
+    # Without this, midnight UTC (= 7 PM ET) rolls the date forward and
+    # fetches the *next* day's games before tonight's have even tipped off.
+    date_str = datetime.now(_ET).strftime("%Y-%m-%d")
     cache_key = f"games_{date_str}"
     cached = cache_get(cache_key, config.CACHE_TTL["games"])
     if cached:
@@ -339,12 +346,13 @@ def get_team_recent_form(team_id: int, season: str | None = None, last_n: int = 
     wins = int((recent["WL"] == "W").sum())
     losses = int((recent["WL"] == "L").sum())
 
-    # Back-to-back: last two game dates are consecutive calendar days
+    # Back-to-back: the team's most recent game was yesterday (tonight is the second game)
     b2b = False
-    if len(df) >= 2:
-        d0 = df.iloc[0]["GAME_DATE"]
-        d1 = df.iloc[1]["GAME_DATE"]
-        b2b = (d0 - d1).days == 1
+    if len(df) >= 1:
+        last_game_ts = df.iloc[0]["GAME_DATE"]
+        last_game_date = last_game_ts.date() if hasattr(last_game_ts, "date") else last_game_ts
+        today_et = datetime.now(_ET).date()
+        b2b = (today_et - last_game_date).days == 1
 
     # Streak
     streak = _compute_streak(df["WL"].tolist())

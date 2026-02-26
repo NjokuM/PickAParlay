@@ -1,0 +1,533 @@
+"""
+PickAParlay — FastAPI Backend
+
+Wraps the existing src/ pipeline with REST endpoints so the Next.js
+frontend can talk to the same grading engine without duplicating logic.
+
+Start with:
+    uvicorn backend.app:app --reload --port 8000
+"""
+from __future__ import annotations
+
+import dataclasses
+import os
+import sys
+import threading
+from datetime import datetime
+from typing import Optional
+
+# Ensure the project root is on sys.path so all src/ imports work
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+import config
+import src.cache as cache
+import src.database as database
+from src.api import injury_api, nba_stats, odds_api
+from src.analysis import bet_builder, prop_grader
+from src.models import BetSlip, FactorResult, NBAGame, PlayerProp, ValuedProp
+
+app = FastAPI(title="PickAParlay API", version="1.0.0")
+
+# Allow the Next.js dev server and any local origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+def startup() -> None:
+    database.init_db()
+
+
+# ---------------------------------------------------------------------------
+# Background refresh state
+# ---------------------------------------------------------------------------
+
+_refresh_state: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "status": "idle",   # idle | running | done | no_games | no_props | error
+    "props_graded": 0,
+    "props_total": 0,
+    "run_id": None,
+    "error": None,
+}
+_refresh_lock = threading.Lock()
+
+
+def _run_refresh_background(season: str) -> None:
+    global _refresh_state
+
+    with _refresh_lock:
+        _refresh_state.update(
+            running=True,
+            started_at=datetime.utcnow().isoformat(),
+            finished_at=None,
+            status="running",
+            props_graded=0,
+            props_total=0,
+            run_id=None,
+            error=None,
+        )
+
+    try:
+        # 1. Tonight's games
+        games = nba_stats.get_todays_games()
+        if not games:
+            with _refresh_lock:
+                _refresh_state.update(
+                    running=False,
+                    finished_at=datetime.utcnow().isoformat(),
+                    status="no_games",
+                )
+            return
+
+        # 2. Injuries
+        injuries = injury_api.get_injury_report()
+
+        # 3. Events + props
+        events = odds_api.get_events()
+        for game in games:
+            event_id = odds_api.match_game_to_event(game, events)
+            if event_id:
+                game.odds_event_id = event_id
+
+        all_raw_props: list = []
+        for game in games:
+            if game.odds_event_id:
+                raw = odds_api.get_player_props_for_event(game.odds_event_id)
+                player_id_map: dict[str, int] = {}
+                for rp in raw:
+                    name = rp["player_name"]
+                    if name not in player_id_map:
+                        pid = nba_stats.get_player_id(name)
+                        if pid:
+                            player_id_map[name] = pid
+                props = odds_api.build_player_props(raw, game, player_id_map)
+                all_raw_props.extend(props)
+
+        with _refresh_lock:
+            _refresh_state["props_total"] = len(all_raw_props)
+
+        if not all_raw_props:
+            with _refresh_lock:
+                _refresh_state.update(
+                    running=False,
+                    finished_at=datetime.utcnow().isoformat(),
+                    status="no_props",
+                )
+            return
+
+        # 4. Grade props (both OVER and UNDER sides)
+        all_valued_props: list[ValuedProp] = []
+        for i, prop in enumerate(all_raw_props):
+            vp_over = prop_grader.grade_prop(prop, injuries, season=season, side="over")
+            if vp_over is not None:
+                all_valued_props.append(vp_over)
+            # Grade UNDER if a valid under price exists
+            if prop.under_odds_decimal and prop.under_odds_decimal > 1.0:
+                vp_under = prop_grader.grade_prop(prop, injuries, season=season, side="under")
+                if vp_under is not None:
+                    all_valued_props.append(vp_under)
+            with _refresh_lock:
+                _refresh_state["props_graded"] = i + 1
+
+        # 5. Cache scored props
+        prop_dicts = [dataclasses.asdict(vp) for vp in all_valued_props]
+        cache.save_scored_props(prop_dicts)
+
+        above_threshold = sum(
+            1 for vp in all_valued_props if vp.value_score >= config.MIN_VALUE_SCORE
+        )
+
+        run_id = database.save_grading_run(
+            season=season,
+            games_count=len(games),
+            props_total=len(all_raw_props),
+            props_graded=len(all_valued_props),
+            props_eligible=above_threshold,
+        )
+
+        with _refresh_lock:
+            _refresh_state.update(
+                running=False,
+                finished_at=datetime.utcnow().isoformat(),
+                status="done",
+                props_graded=len(all_valued_props),
+                run_id=run_id,
+            )
+
+    except Exception as exc:
+        with _refresh_lock:
+            _refresh_state.update(
+                running=False,
+                finished_at=datetime.utcnow().isoformat(),
+                status="error",
+                error=str(exc),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Reconstruction helpers
+# ---------------------------------------------------------------------------
+
+def _vp_from_dict(d: dict) -> ValuedProp:
+    game_d = d["prop"]["game"]
+    game = NBAGame(**game_d)
+
+    prop_d = dict(d["prop"])
+    prop_d["game"] = game
+    prop = PlayerProp(**prop_d)
+
+    factors = [FactorResult(**f) for f in d["factors"]]
+
+    return ValuedProp(
+        prop=prop,
+        value_score=d["value_score"],
+        factors=factors,
+        recommendation=d["recommendation"],
+        backing_data=d.get("backing_data", {}),
+        suspicious_line=d.get("suspicious_line", False),
+        suspicious_reason=d.get("suspicious_reason", ""),
+    )
+
+
+def _vp_to_response(vp: ValuedProp) -> dict:
+    g = vp.prop.game
+    return {
+        "player_name": vp.prop.player_name,
+        "player_id": vp.prop.nba_player_id,
+        "market": vp.prop.market,
+        "market_label": config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market),
+        "line": vp.prop.line,
+        "side": vp.backing_data.get("side", "over"),
+        "over_odds": vp.prop.over_odds_decimal,
+        "bookmaker": vp.prop.bookmaker,
+        "is_paddy_power": vp.prop.is_paddy_power,
+        "value_score": round(vp.value_score, 1),
+        "recommendation": vp.recommendation,
+        "game": f"{g.away_team} @ {g.home_team}",
+        "game_date": g.game_date,
+        "suspicious_line": vp.suspicious_line,
+        "suspicious_reason": vp.suspicious_reason,
+        "factors": [
+            {
+                "name": f.name,
+                "score": round(f.score, 1),
+                "weight": f.weight,
+                "evidence": f.evidence,
+                "confidence": f.confidence,
+            }
+            for f in vp.factors
+        ],
+        "backing_data": vp.backing_data,
+    }
+
+
+def _slip_to_response(slip: BetSlip, odds_str: str) -> dict:
+    return {
+        "combined_odds": round(slip.combined_decimal_odds, 3),
+        "target_decimal": slip.target_decimal_odds,
+        "target_odds_str": odds_str,
+        "avg_value_score": round(slip.total_value_score, 1),
+        "has_correlated_legs": slip.has_correlated_legs,
+        "summary": slip.summary,
+        "legs": [
+            {
+                "player_name": leg.valued_prop.prop.player_name,
+                "market": leg.valued_prop.prop.market,
+                "market_label": config.MARKET_MAP.get(
+                    leg.valued_prop.prop.market, {}
+                ).get("label", leg.valued_prop.prop.market),
+                "line": leg.valued_prop.prop.line,
+                "side": leg.side,
+                "over_odds": leg.decimal_odds,
+                "bookmaker": leg.valued_prop.prop.bookmaker,
+                "is_paddy_power": leg.valued_prop.prop.is_paddy_power,
+                "value_score": round(leg.valued_prop.value_score, 1),
+                "recommendation": leg.valued_prop.recommendation,
+                "game": (
+                    f"{leg.valued_prop.prop.game.away_team} @ "
+                    f"{leg.valued_prop.prop.game.home_team}"
+                ),
+                "factors": [
+                    {
+                        "name": f.name,
+                        "score": round(f.score, 1),
+                        "weight": f.weight,
+                    }
+                    for f in leg.valued_prop.factors
+                ],
+            }
+            for leg in slip.legs
+        ],
+    }
+
+
+def _parse_odds(odds_str: str) -> float:
+    odds_str = odds_str.strip()
+    if "/" in odds_str:
+        a, b = odds_str.split("/")
+        return round(float(a) / float(b) + 1, 4)
+    if odds_str.startswith("+"):
+        return round(float(odds_str[1:]) / 100 + 1, 4)
+    if odds_str.startswith("-"):
+        return round(100 / abs(float(odds_str)) + 1, 4)
+    val = float(odds_str)
+    if val <= 1.0:
+        raise ValueError(f"Decimal odds must be > 1.0, got {val}")
+    return round(val, 4)
+
+
+def _load_valued_props() -> list[ValuedProp]:
+    raw_dicts = cache.load_scored_props_raw()
+    if not raw_dicts:
+        return []
+    result = []
+    for d in raw_dicts:
+        try:
+            result.append(_vp_from_dict(d))
+        except Exception:
+            pass
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/tonight")
+def get_tonight() -> list[dict]:
+    """Tonight's NBA games (ET date)."""
+    games = nba_stats.get_todays_games()
+    return [
+        {
+            "game_id": g.game_id,
+            "home_team": g.home_team,
+            "away_team": g.away_team,
+            "matchup": f"{g.away_team} @ {g.home_team}",
+            "game_date": g.game_date,
+        }
+        for g in games
+    ]
+
+
+@app.get("/api/props")
+def get_props(
+    min_score: float = Query(default=0.0),
+    game: Optional[str] = Query(default=None),
+    player: Optional[str] = Query(default=None),
+    bookmaker: Optional[str] = Query(default=None),
+    market: Optional[str] = Query(default=None),
+    side: Optional[str] = Query(default=None),
+) -> list[dict]:
+    """All scored props for today, optionally filtered."""
+    vps = _load_valued_props()
+    result = []
+    for vp in vps:
+        if vp.value_score < min_score:
+            continue
+        g_str = f"{vp.prop.game.away_team} @ {vp.prop.game.home_team}"
+        if game and game.upper() not in g_str.upper():
+            continue
+        if player and player.lower() not in vp.prop.player_name.lower():
+            continue
+        if bookmaker:
+            if bookmaker.lower() == "paddypower":
+                if not vp.prop.is_paddy_power:
+                    continue
+            elif vp.prop.bookmaker != bookmaker:
+                continue
+        if market:
+            ml = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
+            if market.lower() not in ml.lower():
+                continue
+        if side and vp.backing_data.get("side", "over") != side.lower():
+            continue
+        result.append(_vp_to_response(vp))
+
+    result.sort(key=lambda x: x["value_score"], reverse=True)
+    return result
+
+
+@app.get("/api/bookmakers")
+def get_bookmakers() -> list[str]:
+    """Distinct bookmakers present in today's cached props."""
+    vps = _load_valued_props()
+    books: set[str] = set()
+    has_pp = False
+    for vp in vps:
+        if vp.prop.bookmaker:
+            books.add(vp.prop.bookmaker)
+        if vp.prop.is_paddy_power:
+            has_pp = True
+    result = sorted(books)
+    if has_pp and "paddypower" not in result:
+        result = ["paddypower"] + result
+    return result
+
+
+@app.post("/api/refresh")
+def trigger_refresh(season: str = config.DEFAULT_SEASON) -> dict:
+    """Kick off the full fetch + grade pipeline in a background thread."""
+    with _refresh_lock:
+        if _refresh_state["running"]:
+            return {"status": "already_running", "state": dict(_refresh_state)}
+
+    t = threading.Thread(
+        target=_run_refresh_background, args=(season,), daemon=True
+    )
+    t.start()
+    return {"status": "started"}
+
+
+@app.get("/api/refresh/status")
+def refresh_status() -> dict:
+    """Current state of the background refresh."""
+    with _refresh_lock:
+        return dict(_refresh_state)
+
+
+@app.get("/api/slips")
+def get_slips(
+    odds: str = Query(default="4/1"),
+    legs: Optional[int] = Query(default=None),
+    min_score: Optional[float] = Query(default=None),
+    bookmaker: Optional[str] = Query(default=None),
+) -> list[dict]:
+    """Build bet slips from cached props — instant, no API calls."""
+    if not cache.load_scored_props_raw():
+        raise HTTPException(
+            status_code=404,
+            detail="No cached props. POST /api/refresh first.",
+        )
+
+    try:
+        target_decimal = _parse_odds(odds)
+    except (ValueError, ZeroDivisionError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    vps = _load_valued_props()
+    threshold = min_score if min_score is not None else config.MIN_VALUE_SCORE
+    slips = bet_builder.build_slips(
+        vps,
+        target_decimal=target_decimal,
+        n_legs=legs,
+        min_score=threshold,
+        bookmaker=bookmaker,
+    )
+    return [_slip_to_response(s, odds) for s in slips]
+
+
+class SaveSlipRequest(BaseModel):
+    odds: str
+    slip_index: int = 0
+    bookmaker: Optional[str] = None
+    legs: Optional[int] = None
+    min_score: Optional[float] = None
+
+
+@app.post("/api/slips/save")
+def save_slip_endpoint(req: SaveSlipRequest) -> dict:
+    """Re-build slips and save the chosen one to the database."""
+    if not cache.load_scored_props_raw():
+        raise HTTPException(status_code=404, detail="No cached props.")
+
+    try:
+        target_decimal = _parse_odds(req.odds)
+    except (ValueError, ZeroDivisionError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    vps = _load_valued_props()
+    threshold = req.min_score if req.min_score is not None else config.MIN_VALUE_SCORE
+    slips = bet_builder.build_slips(
+        vps,
+        target_decimal=target_decimal,
+        n_legs=req.legs,
+        min_score=threshold,
+        bookmaker=req.bookmaker,
+    )
+
+    if req.slip_index >= len(slips):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Slip index {req.slip_index} out of range (only {len(slips)} slips).",
+        )
+
+    slip = slips[req.slip_index]
+    run_id = database.get_latest_run_id()
+    slip_id = database.save_slip(
+        slip=slip,
+        target_odds_str=req.odds,
+        run_id=run_id,
+        bookmaker_filter=req.bookmaker,
+    )
+    return {"slip_id": slip_id, "saved": True}
+
+
+@app.get("/api/history")
+def get_history(limit: int = Query(default=20)) -> list[dict]:
+    """Saved slips with nested legs, newest first."""
+    return database.get_history(limit=limit)
+
+
+class OutcomeRequest(BaseModel):
+    outcome: str                                    # WIN | LOSS | VOID
+    stake: Optional[float] = None
+    leg_results: Optional[dict[str, str]] = None   # {str(leg_id): "HIT"|"MISS"}
+
+
+@app.patch("/api/history/{slip_id}/outcome")
+def record_outcome_endpoint(slip_id: int, req: OutcomeRequest) -> dict:
+    """Record WIN / LOSS / VOID for a slip (and optionally HIT/MISS per leg)."""
+    if req.outcome not in ("WIN", "LOSS", "VOID"):
+        raise HTTPException(
+            status_code=400, detail="outcome must be WIN, LOSS, or VOID"
+        )
+
+    database.record_outcome(slip_id, req.outcome, req.stake)
+
+    if req.leg_results:
+        for leg_id_str, result in req.leg_results.items():
+            if result in ("HIT", "MISS"):
+                database.record_leg_result(int(leg_id_str), result)
+
+    return {"updated": True, "slip_id": slip_id}
+
+
+@app.get("/api/analytics")
+def get_analytics() -> dict:
+    """Factor accuracy stats and P&L from all recorded outcomes."""
+    return database.get_analytics()
+
+
+@app.get("/api/credits")
+def get_credits() -> dict:
+    """Odds API credit usage for this month."""
+    return {
+        "used": cache.get_credits_used(),
+        "remaining": cache.get_credits_remaining(),
+        "total": 500,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dev entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("backend.app:app", host="0.0.0.0", port=8000, reload=True)

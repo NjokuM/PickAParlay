@@ -30,3 +30,12 @@ env/
 
 # Claude dev config (local only)
 .claude/
+
+# SQLite database (runtime data, not source)
+*.db
+*.db-shm
+*.db-wal
+
+# Next.js build artifacts
+frontend/.next/
+frontend/node_modules/

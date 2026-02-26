@@ -51,14 +51,14 @@ def compute(
         )
 
     evidence: list[str] = []
-    score = 70.0  # baseline — no relevant injuries
+    score = 75.0  # baseline — player healthy, no relevant injuries
 
     if player_status:
         severity = injury_severity_score(player_status)
         score *= severity
         evidence.append(f"{player_name}: {player_status.upper()} ({severity:.0%} health)")
     else:
-        evidence.append(f"{player_name}: no injury listed ✓")
+        evidence.append(f"{player_name}: healthy ✓")
 
     # 2. Teammate injuries (same team as the player)
     teammate_injuries = get_team_injuries(player_team_abbr, injury_reports)

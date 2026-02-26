@@ -44,6 +44,17 @@ def compute(
 
     evidence: list[str] = []
 
+    # --- Early return when no data is available to assess risk ---
+    if spread is None and h2h_avg_margin == 0:
+        return FactorResult(
+            name="Blowout Risk",
+            score=50.0,
+            weight=weight,
+            evidence=["Spread unavailable — blowout risk unknown, using neutral score"],
+            data={"blowout_risk": None, "spread": None, "h2h_avg_margin": 0, "penalty_applied": False},
+            confidence=0.0,
+        )
+
     # --- Blowout risk calculation ---
     spread_abs = abs(spread) if spread is not None else 0.0
     spread_risk = min(1.0, spread_abs / config.BLOWOUT_SPREAD_NORMALISER)
@@ -56,7 +67,8 @@ def compute(
     if team_id:
         avg_win_margin = get_team_avg_win_margin(team_id, season=season)
         team_style_risk = min(1.0, avg_win_margin / config.BLOWOUT_SPREAD_NORMALISER)
-        evidence.append(f"Team avg win margin: +{avg_win_margin:.1f}")
+        if avg_win_margin > 0:
+            evidence.append(f"Team avg win margin: +{avg_win_margin:.1f}")
 
     blowout_risk = (
         0.50 * spread_risk +

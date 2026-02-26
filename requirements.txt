@@ -6,3 +6,5 @@ click>=8.1.7
 python-dotenv>=1.0.0
 thefuzz>=0.22.1
 python-levenshtein>=0.23.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0

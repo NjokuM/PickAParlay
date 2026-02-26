@@ -27,6 +27,7 @@ from src.analysis.factors import (
     team_context,
     season_avg,
     blowout_risk,
+    volume_context,
 )
 from src.analysis.scorer import compute_value_score, label_recommendation, detect_suspicious_line
 
@@ -35,6 +36,7 @@ def grade_prop(
     prop: PlayerProp,
     injury_reports: list[InjuryReport],
     season: str | None = None,
+    side: str = "over",
 ) -> ValuedProp | None:
     """
     Run full multi-factor analysis on a single prop.
@@ -78,7 +80,7 @@ def grade_prop(
     )
 
     # --- Factor 1: Consistency ---
-    f_consistency = consistency.compute(df_ctx, stat_col, prop.line)
+    f_consistency = consistency.compute(df_ctx, stat_col, prop.line, side=side)
 
     # --- Factor 2: vs Opponent ---
     h2h_team = get_h2h_record(
@@ -93,10 +95,11 @@ def grade_prop(
         opponent_abbr,
         player_team_abbr,
         h2h_team_record=h2h_team,
+        side=side,
     )
 
     # --- Factor 3: Home/Away ---
-    f_home_away = home_away.compute(df_raw, stat_col, prop.line, tonight_is_home)
+    f_home_away = home_away.compute(df_raw, stat_col, prop.line, tonight_is_home, side=side)
 
     # --- Factor 4: Injury Context ---
     f_injury = injury_context.compute(
@@ -137,8 +140,8 @@ def grade_prop(
         season=season,
     )
 
-    # --- Line value factor (inline, 1%) ---
-    f_line_value = _compute_line_value(f_consistency.data.get("floor", 0), prop.line)
+    # --- Factor 8: Volume & Usage (replaces line_value at 4%) ---
+    f_volume = volume_context.compute(df_raw, stat_col, prop.line, prop.market)
 
     factors = [
         f_consistency,
@@ -148,7 +151,7 @@ def grade_prop(
         f_team,
         f_season,
         f_blowout,
-        f_line_value,
+        f_volume,
     ]
 
     value_score = compute_value_score(factors)
@@ -169,6 +172,7 @@ def grade_prop(
             "opponent": opponent_abbr,
             "tonight_home": tonight_is_home,
             "b2b": tonight_is_b2b,
+            "side": side,
         },
         suspicious_line=suspicious,
         suspicious_reason=suspicious_reason,

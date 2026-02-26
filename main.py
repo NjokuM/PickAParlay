@@ -47,11 +47,11 @@ def parse_odds(odds_str: str) -> float:
     """
     odds_str = odds_str.strip()
 
-    # Fractional: "4/1"
+    # Fractional: "4/1" or "1.5/1" or ".33/1"
     if "/" in odds_str:
         parts = odds_str.split("/")
         try:
-            return round(int(parts[0]) / int(parts[1]) + 1, 4)
+            return round(float(parts[0]) / float(parts[1]) + 1, 4)
         except (ValueError, ZeroDivisionError):
             raise click.BadParameter(f"Invalid fractional odds: {odds_str}")
 
@@ -180,11 +180,16 @@ def _run_pipeline(
                 description=f"[{i}/{len(all_raw_props)}] {prop.player_name} — {market_label}",
             )
             try:
-                vp = prop_grader.grade_prop(prop, injuries, season=season)
-                if vp is None:
+                vp_over = prop_grader.grade_prop(prop, injuries, season=season, side="over")
+                if vp_over is None:
                     skipped_no_data += 1
                 else:
-                    all_valued_props.append(vp)
+                    all_valued_props.append(vp_over)
+                    # Also grade UNDER if a valid under price exists
+                    if prop.under_odds_decimal and prop.under_odds_decimal > 1.0:
+                        vp_under = prop_grader.grade_prop(prop, injuries, season=season, side="under")
+                        if vp_under is not None:
+                            all_valued_props.append(vp_under)
             except Exception as e:
                 errors.append(f"{prop.player_name} / {prop.market}: {type(e).__name__}: {e}")
             progress.advance(task)

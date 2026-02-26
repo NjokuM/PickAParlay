@@ -19,6 +19,7 @@ def compute(
     stat_col: str,
     line: float,
     tonight_is_home: bool,
+    side: str = "over",
 ) -> FactorResult:
     weight = config.FACTOR_WEIGHTS["home_away"]
     location_label = "Home" if tonight_is_home else "Away"
@@ -56,12 +57,15 @@ def compute(
         )
 
     values = filtered[stat_col].tolist()
-    hits = [v > line for v in values]
+    hits = [v < line for v in values] if side == "under" else [v > line for v in values]
     hit_rate = sum(hits) / len(hits)
     avg_val = sum(values) / len(values)
 
-    avg_above = max(0.0, (avg_val - line) / line) if line > 0 else 0.0
-    avg_score = min(1.0, 0.5 + avg_above)
+    if side == "under":
+        avg_diff = max(0.0, (line - avg_val) / line) if line > 0 else 0.0
+    else:
+        avg_diff = max(0.0, (avg_val - line) / line) if line > 0 else 0.0
+    avg_score = min(1.0, 0.5 + avg_diff)
     score = round((0.6 * hit_rate + 0.4 * avg_score) * 100, 1)
 
     eff_sample = effective_sample_size(filtered)
@@ -69,8 +73,9 @@ def compute(
 
     vals_str = ", ".join(str(round(v, 1)) for v in values[:10])
     hit_count = sum(hits)
+    direction_verb = "stayed below" if side == "under" else "hit"
     evidence = [
-        f"{location_label} games this season: {hit_count}/{len(values)} hit (line: {line})",
+        f"{location_label} games this season: {hit_count}/{len(values)} {direction_verb} (line: {line})",
         f"{location_label} avg: {avg_val:.1f}",
         f"Values: {vals_str}",
     ]
