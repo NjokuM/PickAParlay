@@ -19,6 +19,7 @@ def compute(
     df: pd.DataFrame,
     stat_col: str,
     line: float,
+    side: str = "over",
 ) -> FactorResult:
     """
     df: full current-season game log (all teams, no context filter needed here —
@@ -57,20 +58,42 @@ def compute(
     else:
         primary_avg = full_avg
 
-    # Score: how far is the avg above the line?
+    # Score: direction-aware — OVER wants avg above line, UNDER wants avg below line
     if line <= 0:
         score = 50.0
-    elif primary_avg >= line:
-        # How much margin?
-        margin_pct = (primary_avg - line) / line
-        score = min(100.0, 50.0 + margin_pct * 100)
+    elif side == "under":
+        if primary_avg <= line:
+            # avg below the line — excellent for UNDER
+            margin_pct = (line - primary_avg) / line
+            score = min(100.0, 50.0 + margin_pct * 100)
+        else:
+            # avg above line — works against the UNDER
+            deficit_pct = (primary_avg - line) / line
+            score = max(0.0, 50.0 - deficit_pct * 100)
     else:
-        # Below line
-        deficit_pct = (line - primary_avg) / line
-        score = max(0.0, 50.0 - deficit_pct * 100)
+        if primary_avg >= line:
+            margin_pct = (primary_avg - line) / line
+            score = min(100.0, 50.0 + margin_pct * 100)
+        else:
+            deficit_pct = (line - primary_avg) / line
+            score = max(0.0, 50.0 - deficit_pct * 100)
 
     score = round(score, 1)
     confidence = compute_confidence(games_played, config.MIN_SAMPLE["season_avg"])
+
+    # Direction-aware verdict string
+    if side == "under":
+        verdict = (
+            f"✓ avg below line — favours UNDER ({primary_avg:.1f} vs {line})"
+            if primary_avg <= line
+            else f"✗ avg above line — works against UNDER ({primary_avg:.1f} vs {line})"
+        )
+    else:
+        verdict = (
+            f"✓ avg above line ({primary_avg:.1f} vs {line})"
+            if primary_avg >= line
+            else f"✗ avg below line ({primary_avg:.1f} vs {line})"
+        )
 
     evidence: list[str] = []
     if role_changed:
@@ -82,10 +105,7 @@ def compute(
         f"Season avg: {full_avg:.1f} pts ({games_played} games) | "
         f"Using: {primary_avg:.1f} | Line: {line}"
     )
-    evidence.append(
-        f"{'✓ avg above line' if primary_avg >= line else '✗ avg below line'} "
-        f"({primary_avg:.1f} vs {line})"
-    )
+    evidence.append(verdict)
     if confidence < 1.0:
         evidence.append(f"Low confidence — {games_played} games played (need {config.MIN_SAMPLE['season_avg']})")
 

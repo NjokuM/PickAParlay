@@ -39,15 +39,15 @@ ODDS_API_KEY: str = os.getenv("ODDS_API_KEY", "")
 # Factor weights — must sum to 1.0
 # ---------------------------------------------------------------------------
 FACTOR_WEIGHTS: dict[str, float] = {
-    "consistency":      0.38,   # Floor analysis + recency-weighted hit rate (last 10 games)
+    "consistency":      0.38,   # Floor/ceiling + recency-weighted hit rate + mean (last 10 games)
     "vs_opponent":      0.20,   # Performance vs tonight's specific opponent (H2H)
     "home_away":        0.12,   # Home/away split matched to tonight's location
-    "injury":           0.13,   # Player health + opponent injury advantage
-    "team_context":     0.07,   # Team pace, recent form, rest
-    "season_avg":       0.04,   # Current season averages vs the prop line (was 0.06)
-    "blowout_risk":     0.02,   # Spread + H2H margin — risk of early DNP (was 0.03)
-    "line_value":       0.00,   # Absorbed into volume_context (was 0.01)
-    "volume_context":   0.04,   # Minutes trend + FGA/assist-rate for the market
+    "injury":           0.12,   # Player health + teammate/opponent injury context (was 0.13)
+    "team_context":     0.05,   # Team pace, recent form, rest (was 0.07)
+    "season_avg":       0.03,   # Current season averages vs the prop line (was 0.04)
+    "blowout_risk":     0.01,   # Spread + H2H margin — risk of early DNP (was 0.02)
+    "line_value":       0.00,   # Retired (absorbed into volume_context)
+    "volume_context":   0.09,   # Minutes trend + FGA/assist-rate, direction-aware (was 0.04)
 }
 
 assert abs(sum(FACTOR_WEIGHTS.values()) - 1.0) < 0.001, "Weights must sum to 1.0"

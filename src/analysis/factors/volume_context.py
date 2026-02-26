@@ -1,7 +1,11 @@
 """
-Factor 9: Volume & Usage Context (4%)
-Measures whether a player is getting enough playing time and shot/assist
-opportunities to realistically hit their prop line.
+Factor 9: Volume & Usage Context (9%)
+Measures whether a player's volume (minutes, attempts, rate) supports hitting
+or staying under their prop line.
+
+Direction-aware:
+  OVER  → high minutes + high usage = favourable (more opportunities to score)
+  UNDER → low minutes + low usage = favourable (fewer opportunities to exceed line)
 
 Three market-specific metrics:
   POINTS / combos with PTS  → FGA rate (field goal attempts per game)
@@ -35,6 +39,7 @@ def compute(
     stat_col: str,
     line: float,
     market: str,
+    side: str = "over",
 ) -> FactorResult:
     """
     df: full current-season game log (raw, not context-filtered).
@@ -104,9 +109,18 @@ def compute(
         else:
             evidence.append("AST rate unavailable (no minutes data)")
 
-    # ── Final score ──────────────────────────────────────────────────────────
-    score = 0.40 * mpg_score + 0.60 * usage_score
-    score = round(min(100.0, max(0.0, score)), 1)
+    # ── Final score (OVER direction) ─────────────────────────────────────────
+    over_score = 0.40 * mpg_score + 0.60 * usage_score
+    over_score = round(min(100.0, max(0.0, over_score)), 1)
+
+    # For UNDER: invert — low volume / low minutes = GOOD (fewer chances to exceed line)
+    if side == "under":
+        score = round(100.0 - over_score, 1)
+        evidence.append(
+            f"Low volume favours UNDER — high minutes/usage would work against it"
+        )
+    else:
+        score = over_score
 
     n_games = len(df)
     confidence = min(1.0, n_games / 10)
@@ -121,6 +135,7 @@ def compute(
             "season_mpg": season_mpg,
             "mpg_score": round(mpg_score, 1),
             "usage_score": round(usage_score, 1),
+            "side": side,
         },
         confidence=confidence,
     )

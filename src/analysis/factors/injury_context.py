@@ -33,10 +33,11 @@ def compute(
     opponent_team_abbr: str,
     market: str,
     injury_reports: list[InjuryReport],
+    side: str = "over",
 ) -> FactorResult:
     weight = config.FACTOR_WEIGHTS["injury"]
 
-    # 1. Player's own status
+    # 1. Player's own status — OUT/DOUBTFUL: avoid regardless of side
     player_status = get_player_status(player_name, injury_reports)
     if is_player_unavailable(player_status):
         return FactorResult(
@@ -55,21 +56,30 @@ def compute(
 
     if player_status:
         severity = injury_severity_score(player_status)
-        score *= severity
-        evidence.append(f"{player_name}: {player_status.upper()} ({severity:.0%} health)")
+        if side == "under":
+            # QUESTIONABLE/PROBABLE for UNDER = likely plays limited minutes → fewer stat opportunities → GOOD
+            # severity=0.5 (QUESTIONABLE) → +10 boost; severity=0.8 (PROBABLE) → +4 boost
+            boost = (1.0 - severity) * 20.0
+            score = min(100.0, score + boost)
+            evidence.append(
+                f"{player_name}: {player_status.upper()} — limited minutes likely, favours UNDER"
+            )
+        else:
+            score *= severity
+            evidence.append(f"{player_name}: {player_status.upper()} ({severity:.0%} health)")
     else:
         evidence.append(f"{player_name}: healthy ✓")
 
     # 2. Teammate injuries (same team as the player)
     teammate_injuries = get_team_injuries(player_team_abbr, injury_reports)
     teammate_impact = _assess_teammate_impact(
-        player_name, market, teammate_injuries, evidence
+        player_name, market, teammate_injuries, evidence, side=side
     )
     score += teammate_impact
 
-    # 3. Opponent key injuries (positive for the player)
+    # 3. Opponent key injuries
     opponent_injuries = get_team_injuries(opponent_team_abbr, injury_reports)
-    opponent_impact = _assess_opponent_impact(market, opponent_injuries, evidence)
+    opponent_impact = _assess_opponent_impact(market, opponent_injuries, evidence, side=side)
     score += opponent_impact
 
     score = round(max(0.0, min(100.0, score)), 1)
@@ -94,11 +104,14 @@ def _assess_teammate_impact(
     market: str,
     teammate_injuries: list[InjuryReport],
     evidence: list[str],
+    side: str = "over",
 ) -> float:
     """
     Estimate how teammate injuries shift this player's counting stats.
-    A primary scorer out → ball handler gets more touches → AST may drop, PTS may rise.
-    A secondary player out → neutral.
+
+    OVER: primary scorer out → ball handler gets more touches → PTS up, AST down.
+    UNDER: effects are mirrored — more scoring load is BAD for UNDER PTS; fewer set plays
+           means fewer assists which is GOOD for UNDER AST.
     """
     impact = 0.0
     for inj in teammate_injuries:
@@ -112,19 +125,32 @@ def _assess_teammate_impact(
             continue
 
         if "assists" in market:
-            # Primary scorer out → fewer set plays, assists likely drop
-            impact -= 5
-            evidence.append(
-                f"Teammate {inj.player_name} ({inj.status}) — fewer set plays, assists may drop"
-            )
+            if side == "under":
+                # Fewer set plays → fewer assists → GOOD for UNDER
+                impact += 5
+                evidence.append(
+                    f"Teammate {inj.player_name} ({inj.status}) — fewer set plays, assists likely lower (favours UNDER)"
+                )
+            else:
+                # Primary scorer out → fewer set plays → AST may drop → BAD for OVER
+                impact -= 5
+                evidence.append(
+                    f"Teammate {inj.player_name} ({inj.status}) — fewer set plays, assists may drop"
+                )
         elif "points" in market:
-            # Star scorer out → player takes on more scoring load
-            impact += 8
-            evidence.append(
-                f"Teammate {inj.player_name} ({inj.status}) — increased scoring load +"
-            )
+            if side == "under":
+                # More scoring load → player expected to score MORE → BAD for UNDER
+                impact -= 8
+                evidence.append(
+                    f"Teammate {inj.player_name} ({inj.status}) — increased scoring load (works against UNDER)"
+                )
+            else:
+                # Star scorer out → player takes on more scoring load → GOOD for OVER
+                impact += 8
+                evidence.append(
+                    f"Teammate {inj.player_name} ({inj.status}) — increased scoring load +"
+                )
         else:
-            # Neutral for other markets
             evidence.append(f"Teammate {inj.player_name} ({inj.status})")
 
     return impact
@@ -134,9 +160,10 @@ def _assess_opponent_impact(
     market: str,
     opponent_injuries: list[InjuryReport],
     evidence: list[str],
+    side: str = "over",
 ) -> float:
     """
-    Key defender/scorer on opponent is out → positive for scoring/assists.
+    Key defender on opponent is out → easier scoring/assists (GOOD for OVER, BAD for UNDER).
     """
     impact = 0.0
     for inj in opponent_injuries:
@@ -147,10 +174,17 @@ def _assess_opponent_impact(
             continue
 
         if "points" in market or "rebounds" in market or "assists" in market or "pra" in market.lower():
-            impact += 7
-            evidence.append(
-                f"Opponent {inj.player_name} ({inj.status.upper()}) — defence weakened +"
-            )
+            if side == "under":
+                # Weakened opponent defence → easier scoring = BAD for UNDER
+                impact -= 7
+                evidence.append(
+                    f"Opponent {inj.player_name} ({inj.status.upper()}) — weaker defence (works against UNDER)"
+                )
+            else:
+                impact += 7
+                evidence.append(
+                    f"Opponent {inj.player_name} ({inj.status.upper()}) — defence weakened +"
+                )
 
     return impact
 

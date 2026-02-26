@@ -108,6 +108,7 @@ def grade_prop(
         opponent_abbr,
         prop.market,
         injury_reports,
+        side=side,
     )
 
     # Bail early if player is unavailable
@@ -119,7 +120,7 @@ def grade_prop(
     f_team = team_context.compute(team_id, player_team_abbr, season=season)
 
     # --- Factor 6: Season Average ---
-    f_season = season_avg.compute(df_raw, stat_col, prop.line)
+    f_season = season_avg.compute(df_raw, stat_col, prop.line, side=side)
 
     # --- Factor 7: Blowout Risk ---
     spread = None
@@ -140,8 +141,8 @@ def grade_prop(
         season=season,
     )
 
-    # --- Factor 8: Volume & Usage (replaces line_value at 4%) ---
-    f_volume = volume_context.compute(df_raw, stat_col, prop.line, prop.market)
+    # --- Factor 8: Volume & Usage ---
+    f_volume = volume_context.compute(df_raw, stat_col, prop.line, prop.market, side=side)
 
     factors = [
         f_consistency,
