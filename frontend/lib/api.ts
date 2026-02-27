@@ -78,12 +78,13 @@ export interface SlipLeg {
 
 export interface Slip {
   combined_odds: number;
-  target_decimal: number;
+  target_decimal: number | null;
   target_odds_str: string;
   avg_value_score: number;
   has_correlated_legs: boolean;
   summary: string;
   legs: SlipLeg[];
+  type?: "single" | "multi";  // set by ladder endpoint
 }
 
 export interface SavedLeg {
@@ -153,6 +154,15 @@ export interface RefreshStatus {
   error: string | null;
 }
 
+export interface LadderStatus {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  status: "idle" | "running" | "done" | "no_games" | "no_props" | "error";
+  props_graded: number;
+  error: string | null;
+}
+
 export interface Game {
   game_id: string;
   home_team: string;
@@ -192,26 +202,35 @@ export const api = {
 
   refreshStatus: () => get<RefreshStatus>("/api/refresh/status"),
 
-  slips: (params: {
-    odds: string;
+  slips: (params?: {
+    odds?: string;
     legs?: number;
     min_score?: number;
     bookmaker?: string;
   }) => {
-    const qs = new URLSearchParams({ odds: params.odds });
-    if (params.legs != null) qs.set("legs", String(params.legs));
-    if (params.min_score != null) qs.set("min_score", String(params.min_score));
-    if (params.bookmaker) qs.set("bookmaker", params.bookmaker);
-    return get<Slip[]>(`/api/slips?${qs.toString()}`);
+    const qs = new URLSearchParams();
+    if (params?.odds) qs.set("odds", params.odds);
+    if (params?.legs != null) qs.set("legs", String(params.legs));
+    if (params?.min_score != null) qs.set("min_score", String(params.min_score));
+    if (params?.bookmaker) qs.set("bookmaker", params.bookmaker);
+    const q = qs.toString();
+    return get<Slip[]>(`/api/slips${q ? `?${q}` : ""}`);
   },
 
   saveSlip: (req: {
-    odds: string;
+    odds?: string;
     slip_index?: number;
     bookmaker?: string;
     legs?: number;
     min_score?: number;
   }) => post<{ slip_id: number; saved: boolean }>("/api/slips/save", req),
+
+  ladder: {
+    trigger: (season?: string) =>
+      post<{ status: string }>(`/api/ladder${season ? `?season=${season}` : ""}`),
+    status: () => get<LadderStatus>("/api/ladder/status"),
+    results: () => get<Slip[]>("/api/ladder/results"),
+  },
 
   history: (limit = 20) => get<SavedSlip[]>(`/api/history?limit=${limit}`),
 

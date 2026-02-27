@@ -9,6 +9,7 @@ import { api, Credits } from "@/lib/api";
 const NAV = [
   { href: "/",          label: "Tonight",   icon: "🏀" },
   { href: "/slips",     label: "Slips",     icon: "🎯" },
+  { href: "/ladder",    label: "Ladder",    icon: "🪜" },
   { href: "/history",   label: "History",   icon: "📋" },
   { href: "/analytics", label: "Analytics", icon: "📈" },
 ];

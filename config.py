@@ -237,3 +237,23 @@ MIN_GAMES_PLAYED: int = 5
 # Season rolling window for role-change detection
 ROLE_CHANGE_WINDOW: int = 20        # games
 ROLE_CHANGE_THRESHOLD: float = 0.15  # if rolling-20 avg differs from full season avg by >15%
+
+# ---------------------------------------------------------------------------
+# Alternate market keys (for Ladder Challenge)
+# ---------------------------------------------------------------------------
+ALTERNATE_MARKET_MAP: list[str] = [
+    "player_points_alternate",
+    "player_assists_alternate",
+    "player_rebounds_alternate",
+    "player_threes_alternate",
+]
+
+# Ladder Challenge target odds window (decimal)
+LADDER_ODDS_MIN: float = 1.95
+LADDER_ODDS_MAX: float = 2.30
+LADDER_ODDS_TARGET: float = 2.125       # midpoint used for build_slips
+LADDER_ODDS_TOLERANCE: float = 0.085   # ±8.5% around 2.125 captures 1.95–2.30
+
+# Useful odds range for alternate prop filtering (exclude junk lines)
+ALTERNATE_ODDS_MIN: float = 1.10
+ALTERNATE_ODDS_MAX: float = 2.60

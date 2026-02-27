@@ -403,22 +403,26 @@ def refresh_status() -> dict:
 
 @app.get("/api/slips")
 def get_slips(
-    odds: str = Query(default="4/1"),
+    odds: Optional[str] = Query(default=None),
     legs: Optional[int] = Query(default=None),
     min_score: Optional[float] = Query(default=None),
     bookmaker: Optional[str] = Query(default=None),
 ) -> list[dict]:
-    """Build bet slips from cached props — instant, no API calls."""
+    """Build bet slips from cached props — instant, no API calls.
+    When odds is omitted (or empty), returns highest-confidence combos regardless of odds.
+    """
     if not cache.load_scored_props_raw():
         raise HTTPException(
             status_code=404,
             detail="No cached props. POST /api/refresh first.",
         )
 
-    try:
-        target_decimal = _parse_odds(odds)
-    except (ValueError, ZeroDivisionError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    target_decimal: Optional[float] = None
+    if odds:
+        try:
+            target_decimal = _parse_odds(odds)
+        except (ValueError, ZeroDivisionError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     vps = _load_valued_props()
     threshold = min_score if min_score is not None else config.MIN_VALUE_SCORE
@@ -429,11 +433,11 @@ def get_slips(
         min_score=threshold,
         bookmaker=bookmaker,
     )
-    return [_slip_to_response(s, odds) for s in slips]
+    return [_slip_to_response(s, odds or "Best Value") for s in slips]
 
 
 class SaveSlipRequest(BaseModel):
-    odds: str
+    odds: Optional[str] = None
     slip_index: int = 0
     bookmaker: Optional[str] = None
     legs: Optional[int] = None
@@ -446,10 +450,12 @@ def save_slip_endpoint(req: SaveSlipRequest) -> dict:
     if not cache.load_scored_props_raw():
         raise HTTPException(status_code=404, detail="No cached props.")
 
-    try:
-        target_decimal = _parse_odds(req.odds)
-    except (ValueError, ZeroDivisionError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    target_decimal: Optional[float] = None
+    if req.odds:
+        try:
+            target_decimal = _parse_odds(req.odds)
+        except (ValueError, ZeroDivisionError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     vps = _load_valued_props()
     threshold = req.min_score if req.min_score is not None else config.MIN_VALUE_SCORE
@@ -471,7 +477,7 @@ def save_slip_endpoint(req: SaveSlipRequest) -> dict:
     run_id = database.get_latest_run_id()
     slip_id = database.save_slip(
         slip=slip,
-        target_odds_str=req.odds,
+        target_odds_str=req.odds or "Best Value",
         run_id=run_id,
         bookmaker_filter=req.bookmaker,
     )
@@ -522,6 +528,196 @@ def get_credits() -> dict:
         "remaining": cache.get_credits_remaining(),
         "total": 500,
     }
+
+
+# ---------------------------------------------------------------------------
+# Ladder Challenge — background state + pipeline
+# ---------------------------------------------------------------------------
+
+_ladder_state: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "status": "idle",   # idle | running | done | no_games | no_props | error
+    "props_graded": 0,
+    "error": None,
+}
+_ladder_lock = threading.Lock()
+
+
+def _run_ladder_background(season: str) -> None:
+    """Fetch alternate props for all tonight's games, grade them, build ~2.0 slips."""
+    global _ladder_state
+
+    with _ladder_lock:
+        _ladder_state.update(
+            running=True,
+            started_at=datetime.utcnow().isoformat(),
+            finished_at=None,
+            status="running",
+            props_graded=0,
+            error=None,
+        )
+
+    try:
+        games = nba_stats.get_todays_games()
+        if not games:
+            with _ladder_lock:
+                _ladder_state.update(running=False, finished_at=datetime.utcnow().isoformat(), status="no_games")
+            return
+
+        injuries = injury_api.get_injury_report()
+        events = odds_api.get_events()
+        for game in games:
+            event_id = odds_api.match_game_to_event(game, events)
+            if event_id:
+                game.odds_event_id = event_id
+
+        all_raw_props: list = []
+        for game in games:
+            if not game.odds_event_id:
+                continue
+            raw = odds_api.get_alternate_props_for_event(game.odds_event_id)
+            player_id_map: dict[str, int] = {}
+            for rp in raw:
+                name = rp["player_name"]
+                if name not in player_id_map:
+                    pid = nba_stats.get_player_id(name)
+                    if pid:
+                        player_id_map[name] = pid
+            props = odds_api.build_player_props(raw, game, player_id_map)
+            all_raw_props.extend(props)
+
+        if not all_raw_props:
+            with _ladder_lock:
+                _ladder_state.update(running=False, finished_at=datetime.utcnow().isoformat(), status="no_props")
+            return
+
+        # Grade OVER and UNDER for each alternate prop
+        all_valued_props: list[ValuedProp] = []
+        for i, prop in enumerate(all_raw_props):
+            vp_over = prop_grader.grade_prop(prop, injuries, season=season, side="over")
+            if vp_over is not None:
+                all_valued_props.append(vp_over)
+            if prop.under_odds_decimal and prop.under_odds_decimal > 1.0:
+                vp_under = prop_grader.grade_prop(prop, injuries, season=season, side="under")
+                if vp_under is not None:
+                    all_valued_props.append(vp_under)
+            with _ladder_lock:
+                _ladder_state["props_graded"] = i + 1
+
+        # Build multi-leg slips targeting ~2.0 (1.95–2.30 window)
+        multi_slips = bet_builder.build_slips(
+            all_valued_props,
+            target_decimal=config.LADDER_ODDS_TARGET,
+            tolerance=config.LADDER_ODDS_TOLERANCE,
+            min_score=config.MIN_VALUE_SCORE,
+        )
+
+        # Build single-leg picks: props whose relevant-side odds are in the ladder window
+        single_leg_slips: list[dict] = []
+        seen_singles: set[tuple] = set()
+        for vp in sorted(all_valued_props, key=lambda v: v.value_score, reverse=True):
+            if vp.value_score < config.MIN_VALUE_SCORE:
+                continue
+            side = vp.backing_data.get("side", "over")
+            odds_val = (
+                vp.prop.under_odds_decimal if side == "under" else vp.prop.over_odds_decimal
+            )
+            if not (config.LADDER_ODDS_MIN <= odds_val <= config.LADDER_ODDS_MAX):
+                continue
+            key = (vp.prop.player_name, vp.prop.market, vp.prop.line, side)
+            if key in seen_singles:
+                continue
+            seen_singles.add(key)
+            g = vp.prop.game
+            market_label = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
+            single_leg_slips.append({
+                "type": "single",
+                "combined_odds": round(odds_val, 3),
+                "target_decimal": config.LADDER_ODDS_TARGET,
+                "target_odds_str": "Even Money (~2.0)",
+                "avg_value_score": round(vp.value_score, 1),
+                "has_correlated_legs": False,
+                "summary": (
+                    f"{vp.prop.player_name} {side.upper()} {vp.prop.line} {market_label} "
+                    f"@{odds_val:.2f}"
+                ),
+                "legs": [
+                    {
+                        "player_name": vp.prop.player_name,
+                        "market": vp.prop.market,
+                        "market_label": market_label,
+                        "line": vp.prop.line,
+                        "side": side,
+                        "over_odds": odds_val,
+                        "bookmaker": vp.prop.bookmaker,
+                        "is_paddy_power": vp.prop.is_paddy_power,
+                        "value_score": round(vp.value_score, 1),
+                        "recommendation": vp.recommendation,
+                        "game": f"{g.away_team} @ {g.home_team}",
+                        "factors": [
+                            {"name": f.name, "score": round(f.score, 1), "weight": f.weight}
+                            for f in vp.factors
+                        ],
+                    }
+                ],
+            })
+            if len(single_leg_slips) >= 5:
+                break
+
+        multi_slip_dicts = [_slip_to_response(s, "Even Money (~2.0)") for s in multi_slips]
+        # Mark multi-leg slips for frontend differentiation
+        for d in multi_slip_dicts:
+            d["type"] = "multi"
+
+        all_results = single_leg_slips + multi_slip_dicts
+        cache.set("ladder_results", all_results)
+
+        with _ladder_lock:
+            _ladder_state.update(
+                running=False,
+                finished_at=datetime.utcnow().isoformat(),
+                status="done",
+                props_graded=len(all_valued_props),
+            )
+
+    except Exception as exc:
+        with _ladder_lock:
+            _ladder_state.update(
+                running=False,
+                finished_at=datetime.utcnow().isoformat(),
+                status="error",
+                error=str(exc),
+            )
+
+
+@app.post("/api/ladder")
+def trigger_ladder(season: str = config.DEFAULT_SEASON) -> dict:
+    """Kick off the alternate-props fetch + grade + build in a background thread."""
+    with _ladder_lock:
+        if _ladder_state["running"]:
+            return {"status": "already_running", "state": dict(_ladder_state)}
+
+    t = threading.Thread(target=_run_ladder_background, args=(season,), daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
+@app.get("/api/ladder/status")
+def ladder_status() -> dict:
+    """Current state of the ladder background job."""
+    with _ladder_lock:
+        return dict(_ladder_state)
+
+
+@app.get("/api/ladder/results")
+def ladder_results() -> list[dict]:
+    """Return cached ladder slips (single + multi leg, near even money)."""
+    data = cache.get("ladder_results", config.CACHE_TTL["props"])
+    if data is None:
+        return []
+    return data
 
 
 # ---------------------------------------------------------------------------

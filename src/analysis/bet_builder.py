@@ -14,21 +14,23 @@ from src.models import ValuedProp, BetLeg, BetSlip
 
 def build_slips(
     valued_props: list[ValuedProp],
-    target_decimal: float,
+    target_decimal: float | None = None,
     n_legs: int | None = None,
     min_score: float | None = None,
     bookmaker: str | None = None,
+    tolerance: float | None = None,
 ) -> list[BetSlip]:
     """
     Main entry point.
 
     valued_props: all scored props (already includes score < MIN_VALUE_SCORE filtered out upstream)
-    target_decimal: e.g. 5.0 for a 4/1 bet
+    target_decimal: e.g. 5.0 for a 4/1 bet; None = best-value mode (no odds constraint)
     n_legs: if specified, only build slips of exactly this length
     min_score: optional override for minimum value score cutoff
     bookmaker: if set, only include props from this bookmaker.
                "paddypower" matches is_paddy_power=True; any other string matches
                prop.bookmaker exactly. None = no filter.
+    tolerance: if set, overrides config.ODDS_TOLERANCE for the proximity filter.
     Returns top MAX_SLIPS_RETURNED slips sorted by slip_score descending.
     """
     # --- Bookmaker filter ---
@@ -50,15 +52,17 @@ def build_slips(
 
     if n_legs is not None:
         leg_counts = [n_legs]
-    else:
+    elif target_decimal is not None:
         leg_counts = _estimate_leg_counts(eligible, target_decimal)
+    else:
+        leg_counts = [2, 3, 4]   # best-value mode: try all common sizes
 
     all_slips: list[BetSlip] = []
 
     for n in leg_counts:
         if n < config.MIN_LEGS or n > config.MAX_LEGS:
             continue
-        slips = _search_combinations(eligible, target_decimal, n)
+        slips = _search_combinations(eligible, target_decimal, n, tolerance=tolerance)
         all_slips.extend(slips)
 
     # Deduplicate by frozenset of (player, market, side) tuples
@@ -134,11 +138,12 @@ def _has_overlapping_markets(combo: tuple[ValuedProp, ...]) -> bool:
 
 def _search_combinations(
     eligible: list[ValuedProp],
-    target_decimal: float,
+    target_decimal: float | None,
     n: int,
+    tolerance: float | None = None,
 ) -> list[BetSlip]:
     """Generate all N-leg combinations and score them."""
-    tolerance = config.ODDS_TOLERANCE
+    tol = tolerance if tolerance is not None else config.ODDS_TOLERANCE
     results: list[tuple[float, BetSlip]] = []
 
     for combo in combinations(eligible, n):
@@ -167,10 +172,13 @@ def _search_combinations(
         for vp in combo:
             combined_odds *= _prop_decimal_odds(vp)
 
-        # Odds proximity filter
-        proximity = abs(combined_odds - target_decimal) / target_decimal
-        if proximity > tolerance:
-            continue
+        # Odds proximity filter — skipped in best-value mode (target_decimal is None)
+        if target_decimal is not None:
+            proximity = abs(combined_odds - target_decimal) / target_decimal
+            if proximity > tol:
+                continue
+        else:
+            proximity = None
 
         slip = _make_slip(list(combo), combined_odds, target_decimal)
         slip_score = _score_slip(slip, proximity)
@@ -183,7 +191,7 @@ def _search_combinations(
 def _make_slip(
     combo: list[ValuedProp],
     combined_odds: float,
-    target_decimal: float,
+    target_decimal: float | None,
 ) -> BetSlip:
     legs = [
         BetLeg(
@@ -209,17 +217,20 @@ def _make_slip(
     )
 
 
-def _score_slip(slip: BetSlip, odds_proximity: float) -> float:
+def _score_slip(slip: BetSlip, odds_proximity: float | None) -> float:
     """
-    slip_score = avg_value * 0.5 + odds_proximity_score * 0.3 + independence * 0.2
+    With target: slip_score = avg_value * 0.5 + proximity_score * 0.3 + independence * 0.2
+    Best-value mode (proximity=None): slip_score = avg_value * 0.75 + independence * 0.25
     """
     avg_value = slip.total_value_score / 100
+    independence = 0.8 if slip.has_correlated_legs else 1.0
+
+    if odds_proximity is None:
+        # Best-value mode: no odds constraint, pure quality signal
+        return avg_value * 0.75 + independence * 0.25
 
     # proximity_score: 1.0 = exact match, 0.0 = at tolerance boundary
     proximity_score = max(0.0, 1.0 - odds_proximity / config.ODDS_TOLERANCE)
-
-    independence = 0.8 if slip.has_correlated_legs else 1.0
-
     return avg_value * 0.5 + proximity_score * 0.3 + independence * 0.2
 
 

@@ -26,6 +26,7 @@ class PlayerProp:
     bookmaker: str          # e.g. "paddypower" or "best_available"
     game: NBAGame
     is_paddy_power: bool = True   # False = fell back to best available
+    is_alternate: bool = False    # True for lines from _alternate markets (Ladder Challenge)
 
 
 @dataclass
@@ -67,7 +68,7 @@ class BetLeg:
 class BetSlip:
     legs: list[BetLeg]
     combined_decimal_odds: float
-    target_decimal_odds: float
+    target_decimal_odds: float | None   # None = best-value mode (no target)
     total_value_score: float
     summary: str
     has_correlated_legs: bool = False   # True if 2+ legs from same game

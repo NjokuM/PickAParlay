@@ -339,6 +339,86 @@ def _extract_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Alternate props (for Ladder Challenge)
+# ---------------------------------------------------------------------------
+
+def _extract_alternate_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:
+    """
+    Like _extract_props but keys on (player, market, line) so each distinct
+    threshold gets its own entry.  Only keeps entries where at least one side's
+    odds falls in [ALTERNATE_ODDS_MIN, ALTERNATE_ODDS_MAX].
+    """
+    index: dict[tuple, dict] = {}
+
+    for bm in bookmakers:
+        bm_key = bm["key"]
+        for market in bm.get("markets", []):
+            mkt = market["key"]
+            if mkt not in markets:
+                continue
+            for outcome in market.get("outcomes", []):
+                player = outcome.get("description", "")
+                if not player:
+                    continue
+                side  = outcome.get("name", "")
+                point = outcome.get("point")
+                price = _decimal_odds(outcome.get("price"))
+                if point is None or price <= 0:
+                    continue
+
+                key = (player, mkt, float(point))
+                if key not in index:
+                    index[key] = {
+                        "player_name": player,
+                        "market":      mkt,
+                        "line":        float(point),
+                        "over_odds":   0.0,
+                        "under_odds":  0.0,
+                        "bookmaker":   bm_key,
+                        "is_paddy_power": bm_key == config.PREFERRED_BOOKMAKER,
+                        "is_alternate":   True,
+                    }
+                if side == "Over":
+                    index[key]["over_odds"] = max(index[key]["over_odds"], price)
+                elif side == "Under":
+                    index[key]["under_odds"] = max(index[key]["under_odds"], price)
+
+    # Filter to entries where at least one side is in the useful odds window
+    results = []
+    for d in index.values():
+        over_ok  = config.ALTERNATE_ODDS_MIN <= d["over_odds"]  <= config.ALTERNATE_ODDS_MAX
+        under_ok = config.ALTERNATE_ODDS_MIN <= d["under_odds"] <= config.ALTERNATE_ODDS_MAX
+        if over_ok or under_ok:
+            results.append(d)
+    return results
+
+
+def get_alternate_props_for_event(event_id: str) -> list[dict]:
+    """
+    Fetch alternate prop lines for a Ladder Challenge.
+    Returns raw prop dicts (same shape as get_player_props_for_event output,
+    but with is_alternate=True and one entry per distinct line threshold).
+    """
+    cache_key = f"alt_props_{event_id}"
+    cached = cache_get(cache_key, config.CACHE_TTL["props"])
+    if cached is not None:
+        return cached
+
+    markets_str = ",".join(config.ALTERNATE_MARKET_MAP)
+    data = _get(
+        f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
+        {"regions": config.ODDS_REGIONS, "markets": markets_str},
+    )
+    if not data:
+        return []
+
+    bookmakers = data.get("bookmakers", [])
+    results = _extract_alternate_props(bookmakers, config.ALTERNATE_MARKET_MAP)
+    cache_set(cache_key, results)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Build PlayerProp objects from raw prop dicts
 # ---------------------------------------------------------------------------
 
@@ -372,6 +452,7 @@ def build_player_props(
                 bookmaker=p["bookmaker"],
                 game=game,
                 is_paddy_power=p["is_paddy_power"],
+                is_alternate=p.get("is_alternate", False),
             )
         )
     return props

@@ -11,12 +11,13 @@ function bookmakerLabel(b: string) {
 }
 
 export default function SlipsPage() {
-  const [odds, setOdds]         = useState("4/1");
+  const [odds, setOdds]         = useState("");            // empty = best-value mode
   const [legs, setLegs]         = useState("");
   const [minScore, setMinScore] = useState(50);
   const [bookmaker, setBookmaker] = useState("");
   const [books, setBooks]       = useState<string[]>([]);
   const [slips, setSlips]       = useState<Slip[]>([]);
+  const [legFilter, setLegFilter] = useState<"all"|"2"|"3"|"4">("all");
   const [expanded, setExpanded] = useState<number | null>(null);
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
@@ -24,11 +25,15 @@ export default function SlipsPage() {
 
   useEffect(() => { api.bookmakers().then(setBooks).catch(() => {}); }, []);
 
+  const filteredSlips = legFilter === "all"
+    ? slips
+    : slips.filter(s => s.legs.length === Number(legFilter));
+
   async function buildSlips() {
-    setLoading(true); setError(null); setSlips([]); setExpanded(null);
+    setLoading(true); setError(null); setSlips([]); setExpanded(null); setLegFilter("all");
     try {
       const result = await api.slips({
-        odds,
+        odds: odds || undefined,
         legs: legs ? Number(legs) : undefined,
         min_score: minScore,
         bookmaker: bookmaker || undefined,
@@ -41,7 +46,7 @@ export default function SlipsPage() {
 
   async function saveSlip(idx: number) {
     try {
-      await api.saveSlip({ odds, slip_index: idx, bookmaker: bookmaker || undefined, min_score: minScore, legs: legs ? Number(legs) : undefined });
+      await api.saveSlip({ odds: odds || undefined, slip_index: idx, bookmaker: bookmaker || undefined, min_score: minScore, legs: legs ? Number(legs) : undefined });
       setSaved(s => ({ ...s, [idx]: true }));
     } catch (e: unknown) { alert((e as Error).message); }
   }
@@ -59,10 +64,13 @@ export default function SlipsPage() {
       {/* Controls */}
       <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "16px", marginBottom: 20, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
         <div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Target Odds</div>
-          <input style={{ ...S, width: 100 }} value={odds} onChange={e => setOdds(e.target.value)}
-            placeholder="4/1" onKeyDown={e => e.key === "Enter" && buildSlips()} />
-          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>4/1 · 5.0 · +400</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
+            Target Odds
+            {!odds && <span style={{ marginLeft: 6, color: "var(--accent)", fontWeight: 600 }}>Best Value</span>}
+          </div>
+          <input style={{ ...S, width: 110 }} value={odds} onChange={e => setOdds(e.target.value)}
+            placeholder="Any (Best Value)" onKeyDown={e => e.key === "Enter" && buildSlips()} />
+          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>e.g. 4/1 · 5.0 · +400</div>
         </div>
 
         <div>
@@ -99,13 +107,35 @@ export default function SlipsPage() {
 
       {!loading && slips.length === 0 && !error && (
         <div style={{ color: "var(--muted)", padding: "40px 0", textAlign: "center" }}>
-          Set your odds and click <strong style={{ color: "var(--text)" }}>Build Slips</strong>.
+          Click <strong style={{ color: "var(--text)" }}>Build Slips</strong> — leave odds blank for best-value combos.
         </div>
       )}
 
-      {/* Slip cards */}
+      {/* Leg-count filter toggle — only shown when results exist */}
+      {slips.length > 0 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 16, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", marginRight: 4 }}>Filter:</span>
+          {(["all", "2", "3", "4"] as const).map(f => (
+            <button
+              key={f}
+              style={btn(legFilter === f)}
+              onClick={() => setLegFilter(f)}
+            >
+              {f === "all" ? "All" : `${f}-Leg`}
+            </button>
+          ))}
+          <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: 8 }}>
+            {filteredSlips.length} slip{filteredSlips.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+      )}
+
+      {/* Slip cards — preserve original index for save/expand operations */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {slips.map((slip, idx) => (
+        {slips
+          .map((slip, originalIdx) => ({ slip, originalIdx }))
+          .filter(({ slip }) => legFilter === "all" || slip.legs.length === Number(legFilter))
+          .map(({ slip, originalIdx: idx }) => (
           <div key={idx} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
             {/* Slip header */}
             <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
