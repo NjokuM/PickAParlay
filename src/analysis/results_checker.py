@@ -43,6 +43,18 @@ _MARKET_TO_V3: dict[str, str] = {
     "player_turnovers": "turnovers",
 }
 
+# All V3 stat keys we ever read — used to filter out non-numeric fields
+# (e.g. minutes = "31:07") that would break float conversion.
+_ALL_TRACKED_STATS: frozenset[str] = frozenset(
+    list(_MARKET_TO_V3.values()) +
+    [s for components in [
+        ["points", "reboundsTotal", "assists"],
+        ["points", "reboundsTotal"],
+        ["points", "assists"],
+        ["reboundsTotal", "assists"],
+    ] for s in components]
+)
+
 # Maps combo market key → list of V3 stat keys to sum
 _COMBO_COMPONENTS: dict[str, list[str]] = {
     "player_points_rebounds_assists": ["points", "reboundsTotal", "assists"],
@@ -105,10 +117,13 @@ def fetch_box_scores(game_date: str) -> dict[str, dict[str, float]]:
                 if not name:
                     continue
                 stats = p.get("statistics", {})
-                # Coerce all values to float (API sometimes returns int or None)
+                # Only extract numeric stat keys we actually use.
+                # V3 also includes non-numeric fields like minutes ("31:07") which
+                # cannot be cast to float — filtering by known keys avoids that error.
                 player_stats[name] = {
                     k: float(v) if v is not None else 0.0
                     for k, v in stats.items()
+                    if k in _ALL_TRACKED_STATS
                 }
 
     return player_stats
