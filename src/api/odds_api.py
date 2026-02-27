@@ -407,7 +407,9 @@ def get_alternate_props_for_event(event_id: str) -> list[dict]:
     markets_str = ",".join(config.ALTERNATE_MARKET_MAP)
     data = _get(
         f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
-        {"regions": config.ODDS_REGIONS, "markets": markets_str},
+        # Alternate lines are only offered by US bookmakers (FanDuel, DraftKings, etc.)
+        # EU region (used for standard props / Paddy Power) has none.
+        {"regions": config.ALTERNATE_ODDS_REGIONS, "markets": markets_str},
     )
     if not data:
         return []

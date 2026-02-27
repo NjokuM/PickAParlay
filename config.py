@@ -199,7 +199,8 @@ SUSPICIOUS_HARD_THRESHOLD: float = 0.30    # line > 30% above season avg → fla
 # ---------------------------------------------------------------------------
 ODDS_API_BASE_URL: str = "https://api.the-odds-api.com/v4"
 ODDS_SPORT: str = "basketball_nba"
-ODDS_REGIONS: str = "eu"          # Paddy Power is EU region
+ODDS_REGIONS: str = "eu"                    # Paddy Power is EU region
+ALTERNATE_ODDS_REGIONS: str = "us"          # Alternate lines only offered by US books (FanDuel, DraftKings etc)
 ODDS_MARKETS_GAME: str = "h2h,spreads"
 PREFERRED_BOOKMAKER: str = "paddypower"
 
