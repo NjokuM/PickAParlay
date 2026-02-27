@@ -165,6 +165,30 @@ export interface LadderStatus {
   error: string | null;
 }
 
+export interface PropResult {
+  id: number;
+  slip_id: number;
+  player_name: string;
+  market: string;
+  market_label: string;
+  line: number;
+  side: string | null;
+  game_date: string | null;
+  value_score: number;
+  over_odds: number;
+  bookmaker: string;
+  is_paddy_power: number;
+  leg_result: "HIT" | "MISS";
+  score_consistency: number | null;
+  score_vs_opponent: number | null;
+  score_home_away: number | null;
+  score_injury: number | null;
+  score_team_context: number | null;
+  score_season_avg: number | null;
+  score_blowout_risk: number | null;
+  score_volume_context: number | null;
+}
+
 export interface ResultsStatus {
   status: "idle" | "running" | "done" | "error";
   game_date: string | null;
@@ -245,6 +269,25 @@ export const api = {
       post<{ status: string }>(`/api/ladder${season ? `?season=${season}` : ""}`),
     status: () => get<LadderStatus>("/api/ladder/status"),
     results: () => get<Slip[]>("/api/ladder/results"),
+  },
+
+  propResults: (params?: {
+    market?: string; player?: string;
+    date_from?: string; date_to?: string;
+    min_score?: number; result?: string;
+    side?: string; limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.market)            qs.set("market",    params.market);
+    if (params?.player)            qs.set("player",    params.player);
+    if (params?.date_from)         qs.set("date_from", params.date_from);
+    if (params?.date_to)           qs.set("date_to",   params.date_to);
+    if (params?.min_score != null) qs.set("min_score", String(params.min_score));
+    if (params?.result)            qs.set("result",    params.result);
+    if (params?.side)              qs.set("side",      params.side);
+    if (params?.limit != null)     qs.set("limit",     String(params.limit));
+    const q = qs.toString();
+    return get<PropResult[]>(`/api/prop-results${q ? `?${q}` : ""}`);
   },
 
   results: {

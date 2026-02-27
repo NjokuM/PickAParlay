@@ -355,6 +355,69 @@ def get_analytics() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Prop results (individual leg history)
+# ---------------------------------------------------------------------------
+
+def get_prop_results(
+    market:    str | None = None,
+    player:    str | None = None,
+    date_from: str | None = None,
+    date_to:   str | None = None,
+    min_score: float | None = None,
+    result:    str | None = None,   # "HIT" | "MISS"
+    side:      str | None = None,   # "over" | "under"
+    limit:     int = 300,
+) -> list[dict]:
+    """
+    Return graded slip_legs rows (leg_result IS NOT NULL) with optional filters.
+    Results are ordered newest first (game_date DESC, id DESC).
+    """
+    conditions = ["leg_result IS NOT NULL"]
+    params: list = []
+
+    if market:
+        conditions.append("(market = ? OR market_label LIKE ?)")
+        params.extend([market, f"%{market}%"])
+    if player:
+        conditions.append("player_name LIKE ?")
+        params.append(f"%{player}%")
+    if date_from:
+        conditions.append("game_date >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("game_date <= ?")
+        params.append(date_to)
+    if min_score is not None:
+        conditions.append("value_score >= ?")
+        params.append(min_score)
+    if result in ("HIT", "MISS"):
+        conditions.append("leg_result = ?")
+        params.append(result)
+    if side in ("over", "under"):
+        conditions.append("side = ?")
+        params.append(side)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""SELECT id, slip_id, player_name, market, market_label,
+                       line, side, game_date, value_score, over_odds,
+                       bookmaker, is_paddy_power, leg_result,
+                       score_consistency, score_vs_opponent, score_home_away,
+                       score_injury, score_team_context, score_season_avg,
+                       score_blowout_risk, score_volume_context
+                FROM slip_legs
+                WHERE {where}
+                ORDER BY game_date DESC, id DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Auto result checking helpers
 # ---------------------------------------------------------------------------
 

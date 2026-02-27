@@ -514,6 +514,30 @@ def record_outcome_endpoint(slip_id: int, req: OutcomeRequest) -> dict:
     return {"updated": True, "slip_id": slip_id}
 
 
+@app.get("/api/prop-results")
+def get_prop_results_endpoint(
+    market:    Optional[str]   = Query(default=None),
+    player:    Optional[str]   = Query(default=None),
+    date_from: Optional[str]   = Query(default=None),
+    date_to:   Optional[str]   = Query(default=None),
+    min_score: Optional[float] = Query(default=None),
+    result:    Optional[str]   = Query(default=None),
+    side:      Optional[str]   = Query(default=None),
+    limit:     int             = Query(default=300),
+) -> list[dict]:
+    """Individual graded prop legs with optional filters."""
+    return database.get_prop_results(
+        market=market,
+        player=player,
+        date_from=date_from,
+        date_to=date_to,
+        min_score=min_score,
+        result=result,
+        side=side,
+        limit=limit,
+    )
+
+
 @app.get("/api/analytics")
 def get_analytics() -> dict:
     """Factor accuracy stats and P&L from all recorded outcomes."""

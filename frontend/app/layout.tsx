@@ -10,8 +10,9 @@ const NAV = [
   { href: "/",          label: "Tonight",   icon: "🏀" },
   { href: "/slips",     label: "Slips",     icon: "🎯" },
   { href: "/ladder",    label: "Ladder",    icon: "🪜" },
-  { href: "/history",   label: "History",   icon: "📋" },
-  { href: "/analytics", label: "Analytics", icon: "📈" },
+  { href: "/history",      label: "History",      icon: "📋" },
+  { href: "/prop-results", label: "Prop Results", icon: "📊" },
+  { href: "/analytics",    label: "Analytics",    icon: "📈" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
