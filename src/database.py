@@ -86,6 +86,9 @@ def init_db() -> None:
                 score_season_avg     REAL,
                 score_blowout_risk   REAL,
                 score_volume_context REAL,
+                -- Direction and date — needed for auto result checking
+                side                 TEXT,   -- "over" | "under"
+                game_date            TEXT,   -- "YYYY-MM-DD"
                 -- Actual outcome per leg
                 leg_result           TEXT    -- HIT | MISS | NULL
             );
@@ -101,6 +104,16 @@ def init_db() -> None:
             conn.execute("ALTER TABLE slip_legs ADD COLUMN score_volume_context REAL")
         except Exception:
             pass  # Column already exists — SQLite raises OperationalError in that case
+
+        # Migration: add side and game_date for auto result checking
+        try:
+            conn.execute("ALTER TABLE slip_legs ADD COLUMN side TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE slip_legs ADD COLUMN game_date TEXT")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +199,8 @@ def save_slip(
                     bookmaker, is_paddy_power, value_score,
                     score_consistency, score_vs_opponent, score_home_away,
                     score_injury, score_team_context, score_season_avg, score_blowout_risk,
-                    score_volume_context)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    score_volume_context, side, game_date)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     slip_id,
                     vp.prop.player_name,
@@ -206,6 +219,8 @@ def save_slip(
                     factor_scores.get("Season Average"),
                     factor_scores.get("Blowout Risk"),
                     factor_scores.get("Volume & Usage"),
+                    leg.side,
+                    vp.prop.game.game_date if vp.prop.game else None,
                 ),
             )
 
@@ -337,3 +352,67 @@ def get_analytics() -> dict:
             "by_market": [dict(r) for r in market_stats],
             "calibration": [dict(r) for r in calibration],
         }
+
+
+# ---------------------------------------------------------------------------
+# Auto result checking helpers
+# ---------------------------------------------------------------------------
+
+def get_unresolved_legs(game_date: str | None = None) -> list[dict]:
+    """
+    Return slip legs that haven't been graded yet and have side + game_date populated.
+    Optionally filtered to a specific game_date (ISO date string "YYYY-MM-DD").
+    """
+    with _connect() as conn:
+        if game_date:
+            rows = conn.execute(
+                """SELECT id, slip_id, player_name, market, line, side, game_date
+                   FROM slip_legs
+                   WHERE leg_result IS NULL
+                     AND side IS NOT NULL
+                     AND game_date = ?""",
+                (game_date,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, slip_id, player_name, market, line, side, game_date
+                   FROM slip_legs
+                   WHERE leg_result IS NULL
+                     AND side IS NOT NULL
+                     AND game_date IS NOT NULL""",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def auto_resolve_slip_outcome(slip_id: int) -> str | None:
+    """
+    If all legs for slip_id have been graded and the slip has no outcome yet,
+    derive WIN (all HIT) or LOSS (any MISS) and record it.
+    Returns the outcome string if resolved, else None.
+    """
+    with _connect() as conn:
+        # Check if slip already has an outcome
+        slip_row = conn.execute(
+            "SELECT outcome FROM saved_slips WHERE id = ?", (slip_id,)
+        ).fetchone()
+        if not slip_row or slip_row["outcome"] is not None:
+            return None
+
+        # Fetch all leg results for this slip
+        leg_rows = conn.execute(
+            "SELECT leg_result FROM slip_legs WHERE slip_id = ?", (slip_id,)
+        ).fetchall()
+        if not leg_rows:
+            return None
+
+        results = [r["leg_result"] for r in leg_rows]
+
+        # If any leg is still ungraded, can't resolve yet
+        if any(r is None for r in results):
+            return None
+
+        outcome = "WIN" if all(r == "HIT" for r in results) else "LOSS"
+
+    # record_outcome opens its own connection — call outside the `with` block
+    record_outcome(slip_id, outcome)
+    return outcome

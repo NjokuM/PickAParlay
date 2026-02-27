@@ -27,7 +27,7 @@ import config
 import src.cache as cache
 import src.database as database
 from src.api import injury_api, nba_stats, odds_api
-from src.analysis import bet_builder, prop_grader
+from src.analysis import bet_builder, prop_grader, results_checker
 from src.models import BetSlip, FactorResult, NBAGame, PlayerProp, ValuedProp
 
 app = FastAPI(title="PickAParlay API", version="1.0.0")
@@ -718,6 +718,85 @@ def ladder_results() -> list[dict]:
     if data is None:
         return []
     return data
+
+
+# ---------------------------------------------------------------------------
+# Results auto-check — background state + pipeline
+# ---------------------------------------------------------------------------
+
+_results_state: dict = {
+    "status": "idle",       # idle | running | done | error
+    "game_date": None,
+    "started_at": None,
+    "finished_at": None,
+    "checked": 0,
+    "hit": 0,
+    "miss": 0,
+    "no_data": 0,
+    "slips_resolved": 0,
+    "error": None,
+}
+_results_lock = threading.Lock()
+
+
+def _run_results_background(game_date: str) -> None:
+    """Fetch box scores for game_date and grade all unresolved saved prop legs."""
+    global _results_state
+
+    with _results_lock:
+        _results_state.update(
+            status="running",
+            game_date=game_date,
+            started_at=datetime.utcnow().isoformat(),
+            finished_at=None,
+            checked=0,
+            hit=0,
+            miss=0,
+            no_data=0,
+            slips_resolved=0,
+            error=None,
+        )
+
+    try:
+        summary = results_checker.check_results_for_date(game_date)
+        with _results_lock:
+            _results_state.update(
+                status="done",
+                finished_at=datetime.utcnow().isoformat(),
+                checked=summary["checked"],
+                hit=summary["hit"],
+                miss=summary["miss"],
+                no_data=summary["no_data"],
+                slips_resolved=summary["slips_resolved"],
+            )
+    except Exception as exc:
+        with _results_lock:
+            _results_state.update(
+                status="error",
+                finished_at=datetime.utcnow().isoformat(),
+                error=str(exc),
+            )
+
+
+@app.post("/api/results/check")
+def trigger_results_check(game_date: str = Query(..., description="YYYY-MM-DD")) -> dict:
+    """Kick off background result checking for all saved prop legs on game_date."""
+    with _results_lock:
+        if _results_state["status"] == "running":
+            return {"status": "already_running", "state": dict(_results_state)}
+
+    t = threading.Thread(
+        target=_run_results_background, args=(game_date,), daemon=True
+    )
+    t.start()
+    return {"status": "started", "game_date": game_date}
+
+
+@app.get("/api/results/status")
+def results_check_status() -> dict:
+    """Current state of the background results-check job."""
+    with _results_lock:
+        return dict(_results_state)
 
 
 # ---------------------------------------------------------------------------

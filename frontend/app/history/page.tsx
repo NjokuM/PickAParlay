@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { api, SavedSlip } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { api, ResultsStatus, SavedSlip } from "@/lib/api";
 import { OutcomeBadge, LegResultBadge, ScoreBadge } from "@/components/Badge";
+
+/** Return yesterday's date as "YYYY-MM-DD" in local time. */
+function yesterday(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
 
 function formatDate(s: string) {
   return s ? s.slice(0, 16).replace("T", " ") : "—";
@@ -14,12 +21,51 @@ export default function HistoryPage() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [pending, setPending]   = useState<Record<number, boolean>>({});
 
+  // Auto-check results state
+  const [checkDate, setCheckDate]         = useState<string>(yesterday);
+  const [checkStatus, setCheckStatus]     = useState<ResultsStatus | null>(null);
+  const [checking, setChecking]           = useState(false);
+  const checkPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const load = () => {
     setLoading(true);
     api.history(50).then(setSlips).catch(() => {}).finally(() => setLoading(false));
   };
 
   useEffect(load, []);
+
+  async function autoCheck() {
+    setChecking(true);
+    setCheckStatus(null);
+    try {
+      await api.results.check(checkDate);
+      // Immediately fetch status, then poll
+      const initial = await api.results.status();
+      setCheckStatus(initial);
+      if (initial.status === "running") {
+        checkPollRef.current = setInterval(async () => {
+          try {
+            const s = await api.results.status();
+            setCheckStatus(s);
+            if (s.status !== "running") {
+              clearInterval(checkPollRef.current!);
+              setChecking(false);
+              if (s.status === "done") load();
+            }
+          } catch { /* ignore */ }
+        }, 2000);
+      } else {
+        setChecking(false);
+        if (initial.status === "done") load();
+      }
+    } catch (e) {
+      console.error(e);
+      setChecking(false);
+    }
+  }
+
+  // Clean up poll on unmount
+  useEffect(() => () => { if (checkPollRef.current) clearInterval(checkPollRef.current); }, []);
 
   async function markOutcome(
     slip: SavedSlip,
@@ -39,11 +85,65 @@ export default function HistoryPage() {
     background: "var(--surface2)", color: color ?? "var(--text)", cursor: "pointer", fontSize: 12,
   });
 
+  const S: React.CSSProperties = { background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 10px", color: "var(--text)", fontSize: 13, outline: "none" };
+  const btnStyle = (active?: boolean): React.CSSProperties => ({
+    padding: "6px 14px", borderRadius: 6, border: "1px solid var(--border)",
+    background: active ? "var(--accent)" : "var(--surface2)",
+    color: active ? "#0d1117" : "var(--text)",
+    cursor: "pointer", fontSize: 13, fontWeight: active ? 600 : 400,
+  });
+
   return (
     <div>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 700 }}>History</h1>
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>Saved slips — mark outcomes to track accuracy.</p>
+        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>Saved slips — mark outcomes manually or auto-check from box scores.</p>
+      </div>
+
+      {/* Auto-Check Results control */}
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "14px 16px", marginBottom: 20, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Auto-Check Results</div>
+        <input
+          type="date"
+          value={checkDate}
+          onChange={e => setCheckDate(e.target.value)}
+          style={{ ...S, width: 140 }}
+        />
+        <button
+          style={{ ...btnStyle(true), opacity: checking ? 0.6 : 1 }}
+          onClick={autoCheck}
+          disabled={checking}
+        >
+          {checking ? "Checking…" : "Check Results"}
+        </button>
+
+        {checkStatus && (
+          <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12 }}>
+            {checkStatus.status === "running" && (
+              <span style={{ color: "var(--accent)" }}>Fetching box scores…</span>
+            )}
+            {checkStatus.status === "done" && (
+              <>
+                <span style={{ color: "var(--green)", fontWeight: 600 }}>
+                  ✓ {checkStatus.hit} HIT / {checkStatus.miss} MISS
+                  {checkStatus.no_data > 0 && ` · ${checkStatus.no_data} no data`}
+                </span>
+                {checkStatus.slips_resolved > 0 && (
+                  <span style={{ color: "var(--accent)" }}>
+                    {checkStatus.slips_resolved} slip{checkStatus.slips_resolved !== 1 ? "s" : ""} auto-resolved
+                  </span>
+                )}
+              </>
+            )}
+            {checkStatus.status === "error" && (
+              <span style={{ color: "var(--red)" }}>Error: {checkStatus.error}</span>
+            )}
+          </div>
+        )}
+
+        <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
+          Grades all saved legs for that game date from NBA box scores
+        </div>
       </div>
 
       {loading ? (
@@ -82,7 +182,7 @@ export default function HistoryPage() {
                     <LegResultBadge result={leg.leg_result} />
                     <ScoreBadge score={leg.value_score ?? 0} />
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
-                    <span style={{ color: "var(--muted)", fontSize: 13 }}>OVER {leg.line} {leg.market_label}</span>
+                    <span style={{ color: "var(--muted)", fontSize: 13 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
                     <span style={{ color: "var(--accent)", fontSize: 12, marginLeft: "auto" }}>{leg.over_odds?.toFixed(2) ?? "—"}</span>
                     <span style={{ color: "var(--muted)", fontSize: 11 }}>{leg.is_paddy_power ? "🍀 PP" : leg.bookmaker}</span>
                   </div>

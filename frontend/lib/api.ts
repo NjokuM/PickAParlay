@@ -98,6 +98,8 @@ export interface SavedLeg {
   bookmaker: string;
   is_paddy_power: number;
   value_score: number;
+  side: string | null;        // "over" | "under" | null (rows saved before Phase 5)
+  game_date: string | null;   // "YYYY-MM-DD" | null (rows saved before Phase 5)
   score_consistency: number | null;
   score_vs_opponent: number | null;
   score_home_away: number | null;
@@ -160,6 +162,19 @@ export interface LadderStatus {
   finished_at: string | null;
   status: "idle" | "running" | "done" | "no_games" | "no_props" | "error";
   props_graded: number;
+  error: string | null;
+}
+
+export interface ResultsStatus {
+  status: "idle" | "running" | "done" | "error";
+  game_date: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  checked: number;
+  hit: number;
+  miss: number;
+  no_data: number;
+  slips_resolved: number;
   error: string | null;
 }
 
@@ -230,6 +245,12 @@ export const api = {
       post<{ status: string }>(`/api/ladder${season ? `?season=${season}` : ""}`),
     status: () => get<LadderStatus>("/api/ladder/status"),
     results: () => get<Slip[]>("/api/ladder/results"),
+  },
+
+  results: {
+    check: (gameDate: string) =>
+      post<{ status: string }>(`/api/results/check?game_date=${encodeURIComponent(gameDate)}`),
+    status: () => get<ResultsStatus>("/api/results/status"),
   },
 
   history: (limit = 20) => get<SavedSlip[]>(`/api/history?limit=${limit}`),
