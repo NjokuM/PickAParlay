@@ -167,18 +167,27 @@ export interface LadderStatus {
 
 export interface PropResult {
   id: number;
-  slip_id: number;
   player_name: string;
+  nba_player_id: number | null;
   market: string;
   market_label: string;
   line: number;
-  side: string | null;
-  game_date: string | null;
-  value_score: number;
-  over_odds: number;
+  side: string;
+  game_date: string;
+  over_odds: number | null;
+  under_odds: number | null;
+  decimal_odds: number | null;
   bookmaker: string;
   is_paddy_power: number;
-  leg_result: "HIT" | "MISS";
+  is_alternate: number;
+  value_score: number;
+  recommendation: string;
+  is_best_side: number;       // 1 = model's pick (higher score side)
+  is_active: number;          // 0 = prop pulled before game (player ruled out)
+  leg_result: "HIT" | "MISS" | null;
+  matchup: string | null;
+  graded_at: string | null;
+  result_at: string | null;
   score_consistency: number | null;
   score_vs_opponent: number | null;
   score_home_away: number | null;
@@ -276,16 +285,21 @@ export const api = {
     date_from?: string; date_to?: string;
     min_score?: number; result?: string;
     side?: string; limit?: number;
+    picks_only?: boolean; active_only?: boolean;
+    graded_only?: boolean;
   }) => {
     const qs = new URLSearchParams();
-    if (params?.market)            qs.set("market",    params.market);
-    if (params?.player)            qs.set("player",    params.player);
-    if (params?.date_from)         qs.set("date_from", params.date_from);
-    if (params?.date_to)           qs.set("date_to",   params.date_to);
-    if (params?.min_score != null) qs.set("min_score", String(params.min_score));
-    if (params?.result)            qs.set("result",    params.result);
-    if (params?.side)              qs.set("side",      params.side);
-    if (params?.limit != null)     qs.set("limit",     String(params.limit));
+    if (params?.market)            qs.set("market",      params.market);
+    if (params?.player)            qs.set("player",      params.player);
+    if (params?.date_from)         qs.set("date_from",   params.date_from);
+    if (params?.date_to)           qs.set("date_to",     params.date_to);
+    if (params?.min_score != null) qs.set("min_score",   String(params.min_score));
+    if (params?.result)            qs.set("result",      params.result);
+    if (params?.side)              qs.set("side",        params.side);
+    if (params?.limit != null)     qs.set("limit",       String(params.limit));
+    if (params?.picks_only)        qs.set("picks_only",  "true");
+    if (params?.active_only)       qs.set("active_only", "true");
+    if (params?.graded_only != null) qs.set("graded_only", String(params.graded_only));
     const q = qs.toString();
     return get<PropResult[]>(`/api/prop-results${q ? `?${q}` : ""}`);
   },

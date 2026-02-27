@@ -97,6 +97,51 @@ def init_db() -> None:
                 ON saved_slips(run_id);
             CREATE INDEX IF NOT EXISTS idx_slip_legs_slip_id
                 ON slip_legs(slip_id);
+
+            -- Persistent prop storage: every graded prop survives cache expiry
+            CREATE TABLE IF NOT EXISTS graded_props (
+                id                   INTEGER PRIMARY KEY,
+                player_name          TEXT NOT NULL,
+                nba_player_id        INTEGER,
+                market               TEXT NOT NULL,
+                market_label         TEXT,
+                line                 REAL NOT NULL,
+                side                 TEXT NOT NULL,
+                game_date            TEXT NOT NULL,
+                -- Odds
+                over_odds            REAL,
+                under_odds           REAL,
+                decimal_odds         REAL,
+                bookmaker            TEXT,
+                is_paddy_power       INTEGER DEFAULT 0,
+                is_alternate         INTEGER DEFAULT 0,
+                -- Grading output
+                value_score          REAL,
+                recommendation       TEXT,
+                score_consistency    REAL,
+                score_vs_opponent    REAL,
+                score_home_away      REAL,
+                score_injury         REAL,
+                score_team_context   REAL,
+                score_season_avg     REAL,
+                score_blowout_risk   REAL,
+                score_volume_context REAL,
+                -- Pick tracking
+                is_best_side         INTEGER DEFAULT 0,
+                -- State
+                is_active            INTEGER DEFAULT 1,
+                graded_at            TEXT,
+                -- Result
+                leg_result           TEXT,
+                result_at            TEXT,
+                -- Display
+                matchup              TEXT
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_graded_props_unique
+                ON graded_props(player_name, market, line, side, game_date);
+            CREATE INDEX IF NOT EXISTS idx_graded_props_date
+                ON graded_props(game_date);
         """)
 
         # Migration: add score_volume_context for databases created before this column existed
@@ -355,26 +400,197 @@ def get_analytics() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Prop results (individual leg history)
+# Graded props — persistent storage
+# ---------------------------------------------------------------------------
+
+def upsert_graded_props(valued_props: list, game_date: str) -> int:
+    """
+    Insert or update ALL graded props for the given game date.
+    After upserting, marks stale props as inactive and computes is_best_side.
+    Returns count of rows upserted.
+    """
+    if not valued_props:
+        return 0
+
+    with _connect() as conn:
+        upserted_ids: list[int] = []
+
+        for vp in valued_props:
+            side = vp.backing_data.get("side", "over")
+            decimal_odds = (
+                vp.prop.under_odds_decimal if side == "under"
+                else vp.prop.over_odds_decimal
+            )
+            factor_scores: dict[str, float | None] = {f.name: f.score for f in vp.factors}
+            market_label = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
+            game = vp.prop.game
+            matchup = f"{game.away_team} @ {game.home_team}" if game else None
+
+            cur = conn.execute(
+                """INSERT INTO graded_props
+                   (player_name, nba_player_id, market, market_label, line, side,
+                    game_date, over_odds, under_odds, decimal_odds,
+                    bookmaker, is_paddy_power, is_alternate,
+                    value_score, recommendation,
+                    score_consistency, score_vs_opponent, score_home_away,
+                    score_injury, score_team_context, score_season_avg,
+                    score_blowout_risk, score_volume_context,
+                    is_active, graded_at, matchup)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
+                   ON CONFLICT(player_name, market, line, side, game_date)
+                   DO UPDATE SET
+                     nba_player_id  = excluded.nba_player_id,
+                     market_label   = excluded.market_label,
+                     over_odds      = excluded.over_odds,
+                     under_odds     = excluded.under_odds,
+                     decimal_odds   = excluded.decimal_odds,
+                     bookmaker      = excluded.bookmaker,
+                     is_paddy_power = excluded.is_paddy_power,
+                     is_alternate   = excluded.is_alternate,
+                     value_score    = excluded.value_score,
+                     recommendation = excluded.recommendation,
+                     score_consistency    = excluded.score_consistency,
+                     score_vs_opponent    = excluded.score_vs_opponent,
+                     score_home_away      = excluded.score_home_away,
+                     score_injury         = excluded.score_injury,
+                     score_team_context   = excluded.score_team_context,
+                     score_season_avg     = excluded.score_season_avg,
+                     score_blowout_risk   = excluded.score_blowout_risk,
+                     score_volume_context = excluded.score_volume_context,
+                     is_active    = 1,
+                     graded_at    = excluded.graded_at,
+                     matchup      = excluded.matchup""",
+                (
+                    vp.prop.player_name, vp.prop.nba_player_id,
+                    vp.prop.market, market_label, vp.prop.line, side,
+                    game_date,
+                    vp.prop.over_odds_decimal, vp.prop.under_odds_decimal,
+                    decimal_odds, vp.prop.bookmaker,
+                    int(vp.prop.is_paddy_power), int(getattr(vp.prop, "is_alternate", False)),
+                    vp.value_score, vp.recommendation,
+                    factor_scores.get("Consistency"),
+                    factor_scores.get("vs Opponent"),
+                    factor_scores.get("Home/Away"),
+                    factor_scores.get("Injury Context"),
+                    factor_scores.get("Team Context"),
+                    factor_scores.get("Season Average"),
+                    factor_scores.get("Blowout Risk"),
+                    factor_scores.get("Volume & Usage"),
+                    datetime.utcnow().isoformat(),
+                    matchup,
+                ),
+            )
+            # lastrowid returns the inserted id, or the existing id on conflict
+            upserted_ids.append(cur.lastrowid)
+
+        # Mark stale: props for this date NOT in this batch → inactive
+        if upserted_ids:
+            placeholders = ",".join("?" * len(upserted_ids))
+            conn.execute(
+                f"""UPDATE graded_props SET is_active = 0
+                    WHERE game_date = ? AND id NOT IN ({placeholders})""",
+                [game_date] + upserted_ids,
+            )
+
+        # Compute is_best_side: for each (player, market, line, date),
+        # the side with the higher value_score gets is_best_side = 1
+        conn.execute(
+            "UPDATE graded_props SET is_best_side = 0 WHERE game_date = ?",
+            (game_date,),
+        )
+        conn.execute(
+            """UPDATE graded_props SET is_best_side = 1
+               WHERE id IN (
+                   SELECT id FROM (
+                       SELECT id, ROW_NUMBER() OVER (
+                           PARTITION BY player_name, market, line, game_date
+                           ORDER BY value_score DESC
+                       ) rn
+                       FROM graded_props WHERE game_date = ?
+                   ) WHERE rn = 1
+               )""",
+            (game_date,),
+        )
+
+    return len(upserted_ids)
+
+
+def get_unresolved_graded_props(game_date: str) -> list[dict]:
+    """Return graded_props rows that haven't been result-checked yet for game_date."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT id, player_name, market, line, side, game_date
+               FROM graded_props
+               WHERE leg_result IS NULL AND game_date = ?""",
+            (game_date,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def record_graded_prop_result(prop_id: int, result: str) -> None:
+    """Record HIT / MISS for a graded prop."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE graded_props SET leg_result = ?, result_at = ? WHERE id = ?",
+            (result, datetime.utcnow().isoformat(), prop_id),
+        )
+
+
+def propagate_results_to_slip_legs(game_date: str) -> int:
+    """
+    Copy leg_result from graded_props to matching slip_legs rows.
+    Returns the number of slip_legs rows updated.
+    """
+    with _connect() as conn:
+        cur = conn.execute(
+            """UPDATE slip_legs SET leg_result = (
+                   SELECT gp.leg_result FROM graded_props gp
+                   WHERE gp.player_name = slip_legs.player_name
+                     AND gp.market      = slip_legs.market
+                     AND gp.line        = slip_legs.line
+                     AND gp.side        = slip_legs.side
+                     AND gp.game_date   = slip_legs.game_date
+                     AND gp.leg_result IS NOT NULL
+                   LIMIT 1
+               )
+               WHERE slip_legs.game_date = ?
+                 AND slip_legs.leg_result IS NULL
+                 AND slip_legs.side IS NOT NULL""",
+            (game_date,),
+        )
+        return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Prop results (reads from graded_props)
 # ---------------------------------------------------------------------------
 
 def get_prop_results(
-    market:    str | None = None,
-    player:    str | None = None,
-    date_from: str | None = None,
-    date_to:   str | None = None,
-    min_score: float | None = None,
-    result:    str | None = None,   # "HIT" | "MISS"
-    side:      str | None = None,   # "over" | "under"
-    limit:     int = 300,
+    market:     str | None = None,
+    player:     str | None = None,
+    date_from:  str | None = None,
+    date_to:    str | None = None,
+    min_score:  float | None = None,
+    result:     str | None = None,   # "HIT" | "MISS"
+    side:       str | None = None,   # "over" | "under"
+    picks_only: bool = False,
+    active_only: bool = False,
+    graded_only: bool = True,
+    limit:      int = 500,
 ) -> list[dict]:
     """
-    Return graded slip_legs rows (leg_result IS NOT NULL) with optional filters.
-    Results are ordered newest first (game_date DESC, id DESC).
+    Return graded_props rows with optional filters.
+    Ordered newest first (game_date DESC, value_score DESC).
     """
-    conditions = ["leg_result IS NOT NULL"]
+    conditions: list[str] = []
     params: list = []
 
+    if graded_only:
+        conditions.append("leg_result IS NOT NULL")
+    if picks_only:
+        conditions.append("is_best_side = 1")
+    if active_only:
+        conditions.append("is_active = 1")
     if market:
         conditions.append("(market = ? OR market_label LIKE ?)")
         params.extend([market, f"%{market}%"])
@@ -397,20 +613,24 @@ def get_prop_results(
         conditions.append("side = ?")
         params.append(side)
 
-    where = " AND ".join(conditions)
+    where = " AND ".join(conditions) if conditions else "1=1"
     params.append(limit)
 
     with _connect() as conn:
         rows = conn.execute(
-            f"""SELECT id, slip_id, player_name, market, market_label,
-                       line, side, game_date, value_score, over_odds,
-                       bookmaker, is_paddy_power, leg_result,
+            f"""SELECT id, player_name, nba_player_id, market, market_label,
+                       line, side, game_date,
+                       over_odds, under_odds, decimal_odds,
+                       bookmaker, is_paddy_power, is_alternate,
+                       value_score, recommendation,
+                       is_best_side, is_active, leg_result,
+                       matchup, graded_at, result_at,
                        score_consistency, score_vs_opponent, score_home_away,
                        score_injury, score_team_context, score_season_avg,
                        score_blowout_risk, score_volume_context
-                FROM slip_legs
+                FROM graded_props
                 WHERE {where}
-                ORDER BY game_date DESC, id DESC
+                ORDER BY game_date DESC, value_score DESC
                 LIMIT ?""",
             params,
         ).fetchall()

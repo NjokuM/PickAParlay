@@ -149,6 +149,11 @@ def _run_refresh_background(season: str) -> None:
         prop_dicts = [dataclasses.asdict(vp) for vp in all_valued_props]
         cache.save_scored_props(prop_dicts)
 
+        # 5b. Persist all graded props to the database (upsert)
+        game_date = games[0].game_date if games else None
+        if game_date:
+            database.upsert_graded_props(all_valued_props, game_date)
+
         above_threshold = sum(
             1 for vp in all_valued_props if vp.value_score >= config.MIN_VALUE_SCORE
         )
@@ -516,16 +521,19 @@ def record_outcome_endpoint(slip_id: int, req: OutcomeRequest) -> dict:
 
 @app.get("/api/prop-results")
 def get_prop_results_endpoint(
-    market:    Optional[str]   = Query(default=None),
-    player:    Optional[str]   = Query(default=None),
-    date_from: Optional[str]   = Query(default=None),
-    date_to:   Optional[str]   = Query(default=None),
-    min_score: Optional[float] = Query(default=None),
-    result:    Optional[str]   = Query(default=None),
-    side:      Optional[str]   = Query(default=None),
-    limit:     int             = Query(default=300),
+    market:      Optional[str]   = Query(default=None),
+    player:      Optional[str]   = Query(default=None),
+    date_from:   Optional[str]   = Query(default=None),
+    date_to:     Optional[str]   = Query(default=None),
+    min_score:   Optional[float] = Query(default=None),
+    result:      Optional[str]   = Query(default=None),
+    side:        Optional[str]   = Query(default=None),
+    picks_only:  bool            = Query(default=False),
+    active_only: bool            = Query(default=False),
+    graded_only: bool            = Query(default=True),
+    limit:       int             = Query(default=500),
 ) -> list[dict]:
-    """Individual graded prop legs with optional filters."""
+    """Individual graded props from graded_props table with optional filters."""
     return database.get_prop_results(
         market=market,
         player=player,
@@ -534,6 +542,9 @@ def get_prop_results_endpoint(
         min_score=min_score,
         result=result,
         side=side,
+        picks_only=picks_only,
+        active_only=active_only,
+        graded_only=graded_only,
         limit=limit,
     )
 
@@ -629,6 +640,11 @@ def _run_ladder_background(season: str) -> None:
                     all_valued_props.append(vp_under)
             with _ladder_lock:
                 _ladder_state["props_graded"] = i + 1
+
+        # Persist alternate graded props to DB
+        game_date = games[0].game_date if games else None
+        if game_date:
+            database.upsert_graded_props(all_valued_props, game_date)
 
         # Build multi-leg slips targeting ~2.0 (1.95–2.30 window)
         multi_slips = bet_builder.build_slips(

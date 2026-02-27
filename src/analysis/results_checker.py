@@ -25,7 +25,14 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import config
-from src.database import get_unresolved_legs, record_leg_result, auto_resolve_slip_outcome
+from src.database import (
+    get_unresolved_graded_props,
+    get_unresolved_legs,
+    record_graded_prop_result,
+    record_leg_result,
+    propagate_results_to_slip_legs,
+    auto_resolve_slip_outcome,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -171,26 +178,55 @@ def check_leg(
 
 def check_results_for_date(game_date: str) -> dict:
     """
-    Fetch box scores for game_date, then grade all unresolved saved prop legs
-    for that date.  Records HIT/MISS for each leg and auto-resolves slip
-    WIN/LOSS once all legs are graded.
+    Fetch box scores for game_date, then:
+      1. Grade all unresolved graded_props rows (the primary source of truth)
+      2. Propagate results to matching slip_legs rows
+      3. Auto-resolve any slips where all legs are now graded
 
     Returns a summary dict:
-      {checked, hit, miss, no_data, slips_resolved}
+      {checked, hit, miss, no_data, slips_resolved, props_checked}
     """
     # Fetch box scores (may take a few seconds with per-request sleeps)
     player_stats = fetch_box_scores(game_date)
 
-    # Pull all unresolved legs for this date
-    legs = get_unresolved_legs(game_date)
+    # ── Phase 1: Grade all unresolved graded_props ───────────────────────
+    graded_props = get_unresolved_graded_props(game_date)
 
-    checked       = 0
-    hit           = 0
-    miss          = 0
-    no_data       = 0
-    slips_resolved: set[int] = set()
+    props_checked = 0
+    props_hit     = 0
+    props_miss    = 0
+    props_no_data = 0
 
-    for leg in legs:
+    for gp in graded_props:
+        result = check_leg(
+            player_name=gp["player_name"],
+            market=gp["market"],
+            line=float(gp["line"]),
+            side=(gp["side"] or "over").lower(),
+            player_stats=player_stats,
+        )
+
+        if result is None:
+            props_no_data += 1
+            continue
+
+        record_graded_prop_result(gp["id"], result)
+        props_checked += 1
+        if result == "HIT":
+            props_hit += 1
+        else:
+            props_miss += 1
+
+    # ── Phase 2: Propagate results to slip_legs ──────────────────────────
+    legs_updated = propagate_results_to_slip_legs(game_date)
+
+    # ── Phase 3: Also check any slip_legs without a matching graded_prop ─
+    # (for slips saved before Phase 7 that have no graded_props row)
+    legacy_legs = get_unresolved_legs(game_date)
+    legacy_checked = 0
+    legacy_no_data = 0
+
+    for leg in legacy_legs:
         result = check_leg(
             player_name=leg["player_name"],
             market=leg["market"],
@@ -198,27 +234,40 @@ def check_results_for_date(game_date: str) -> dict:
             side=(leg["side"] or "over").lower(),
             player_stats=player_stats,
         )
-
         if result is None:
-            no_data += 1
+            legacy_no_data += 1
             continue
-
         record_leg_result(leg["id"], result)
-        checked += 1
-        if result == "HIT":
-            hit += 1
-        else:
-            miss += 1
+        legacy_checked += 1
 
-        # Try to auto-resolve the parent slip
-        resolved = auto_resolve_slip_outcome(leg["slip_id"])
+    # ── Phase 4: Auto-resolve slips ──────────────────────────────────────
+    slips_resolved: set[int] = set()
+    # Collect all slip_ids that might have been updated
+    slip_ids_to_check: set[int] = set()
+    for leg in legacy_legs:
+        slip_ids_to_check.add(leg["slip_id"])
+    # Also check slips that were updated via propagation
+    from src.database import _connect
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT slip_id FROM slip_legs
+               WHERE game_date = ? AND leg_result IS NOT NULL""",
+            (game_date,),
+        ).fetchall()
+        for r in rows:
+            slip_ids_to_check.add(r[0])
+
+    for sid in slip_ids_to_check:
+        resolved = auto_resolve_slip_outcome(sid)
         if resolved:
-            slips_resolved.add(leg["slip_id"])
+            slips_resolved.add(sid)
 
     return {
-        "checked":        checked,
-        "hit":            hit,
-        "miss":           miss,
-        "no_data":        no_data,
+        "checked":        props_checked + legacy_checked,
+        "hit":            props_hit,
+        "miss":           props_miss,
+        "no_data":        props_no_data + legacy_no_data,
         "slips_resolved": len(slips_resolved),
+        "props_checked":  props_checked,
+        "legs_propagated": legs_updated,
     }

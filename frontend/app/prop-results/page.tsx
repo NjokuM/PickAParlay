@@ -30,38 +30,46 @@ interface MarketStat { label: string; total: number; hits: number; pct: number }
 interface PlayerStat {
   player: string; market: string;
   total: number; hits: number; hit_pct: number; avg_score: number;
+  pending?: number;
 }
 
 function computeMarketStats(rows: PropResult[]): MarketStat[] {
   const acc: Record<string, { total: number; hits: number }> = {};
   for (const r of rows) {
+    if (r.leg_result == null) continue;          // skip ungraded
     const m = r.market_label;
     if (!acc[m]) acc[m] = { total: 0, hits: 0 };
     acc[m].total++;
     if (r.leg_result === "HIT") acc[m].hits++;
   }
   return Object.entries(acc)
-    .map(([label, s]) => ({ label, ...s, pct: Math.round(s.hits / s.total * 100) }))
+    .map(([label, s]) => ({ label, ...s, pct: s.total ? Math.round(s.hits / s.total * 100) : 0 }))
     .sort((a, b) => b.pct - a.pct);
 }
 
 function computePlayerStats(rows: PropResult[]): PlayerStat[] {
-  const acc: Record<string, { player: string; market: string; total: number; hits: number; scores: number[] }> = {};
+  const acc: Record<string, {
+    player: string; market: string;
+    graded: number; hits: number; scores: number[];
+    pending: number;
+  }> = {};
   for (const r of rows) {
     const key = `${r.player_name}||${r.market_label}`;
-    if (!acc[key]) acc[key] = { player: r.player_name, market: r.market_label, total: 0, hits: 0, scores: [] };
-    acc[key].total++;
-    if (r.leg_result === "HIT") acc[key].hits++;
+    if (!acc[key]) acc[key] = { player: r.player_name, market: r.market_label, graded: 0, hits: 0, scores: [], pending: 0 };
     acc[key].scores.push(r.value_score ?? 0);
+    if (r.leg_result == null) { acc[key].pending++; continue; }
+    acc[key].graded++;
+    if (r.leg_result === "HIT") acc[key].hits++;
   }
   return Object.values(acc)
     .map(v => ({
       player:    v.player,
       market:    v.market,
-      total:     v.total,
+      total:     v.graded,                     // graded count for hit-rate calc
       hits:      v.hits,
-      hit_pct:   Math.round(v.hits / v.total * 100),
+      hit_pct:   v.graded ? Math.round(v.hits / v.graded * 100) : 0,
       avg_score: Math.round(v.scores.reduce((a, b) => a + b, 0) / v.scores.length),
+      pending:   v.pending,
     }))
     .sort((a, b) => b.total - a.total || b.hit_pct - a.hit_pct);
 }
@@ -91,29 +99,35 @@ const MARKETS = [
 ];
 
 export default function PropResultsPage() {
-  const [dateFrom, setDateFrom] = useState(nDaysAgo(7));
-  const [dateTo,   setDateTo]   = useState(today());
-  const [player,   setPlayer]   = useState("");
-  const [market,   setMarket]   = useState("");
-  const [minScore, setMinScore] = useState(0);
-  const [side,     setSide]     = useState<"" | "over" | "under">("");
-  const [result,   setResult]   = useState<"" | "HIT" | "MISS">("");
-  const [view,     setView]     = useState<"table" | "players">("table");
-  const [rows,     setRows]     = useState<PropResult[]>([]);
-  const [loading,  setLoading]  = useState(false);
-  const [loaded,   setLoaded]   = useState(false);
+  const [dateFrom,   setDateFrom]   = useState(nDaysAgo(7));
+  const [dateTo,     setDateTo]     = useState(today());
+  const [player,     setPlayer]     = useState("");
+  const [market,     setMarket]     = useState("");
+  const [minScore,   setMinScore]   = useState(0);
+  const [side,       setSide]       = useState<"" | "over" | "under">("");
+  const [result,     setResult]     = useState<"" | "HIT" | "MISS">("");
+  const [picksOnly,  setPicksOnly]  = useState(true);
+  const [activeOnly, setActiveOnly] = useState(true);
+  const [gradedOnly, setGradedOnly] = useState(true);
+  const [view,       setView]       = useState<"table" | "players">("table");
+  const [rows,       setRows]       = useState<PropResult[]>([]);
+  const [loading,    setLoading]    = useState(false);
+  const [loaded,     setLoaded]     = useState(false);
 
   async function load() {
     setLoading(true);
     try {
       const data = await api.propResults({
-        date_from: dateFrom || undefined,
-        date_to:   dateTo   || undefined,
-        player:    player   || undefined,
-        market:    market   || undefined,
-        min_score: minScore > 0 ? minScore : undefined,
-        side:      side     || undefined,
-        result:    result   || undefined,
+        date_from:   dateFrom || undefined,
+        date_to:     dateTo   || undefined,
+        player:      player   || undefined,
+        market:      market   || undefined,
+        min_score:   minScore > 0 ? minScore : undefined,
+        side:        side     || undefined,
+        result:      result   || undefined,
+        picks_only:  picksOnly  || undefined,
+        active_only: activeOnly || undefined,
+        graded_only: gradedOnly,
         limit: 500,
       });
       setRows(data);
@@ -125,11 +139,13 @@ export default function PropResultsPage() {
     }
   }
 
-  // Summary stats
+  // Summary stats — separate graded vs pending
   const total    = rows.length;
+  const graded   = rows.filter(r => r.leg_result != null).length;
   const hits     = rows.filter(r => r.leg_result === "HIT").length;
-  const misses   = total - hits;
-  const hitPct   = total ? Math.round(hits / total * 100) : 0;
+  const misses   = rows.filter(r => r.leg_result === "MISS").length;
+  const pending  = total - graded;
+  const hitPct   = graded ? Math.round(hits / graded * 100) : 0;
   const byMarket = computeMarketStats(rows);
   const byPlayer = computePlayerStats(rows);
 
@@ -211,6 +227,20 @@ export default function PropResultsPage() {
             ))}
           </div>
         </div>
+        <div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Filters</div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            <button style={pill(picksOnly)} onClick={() => setPicksOnly(!picksOnly)}>
+              Picks Only
+            </button>
+            <button style={pill(activeOnly)} onClick={() => setActiveOnly(!activeOnly)}>
+              Active Only
+            </button>
+            <button style={pill(gradedOnly)} onClick={() => setGradedOnly(!gradedOnly)}>
+              Graded Only
+            </button>
+          </div>
+        </div>
         <button
           style={{ ...btn(true), padding: "8px 20px", opacity: loading ? 0.6 : 1 }}
           onClick={load} disabled={loading}
@@ -225,11 +255,13 @@ export default function PropResultsPage() {
           {/* KPI pills */}
           <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 20px", textAlign: "center" }}>
             <div style={{ fontSize: 24, fontWeight: 700 }}>{total}</div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Graded props</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+              {pending > 0 ? `${graded} graded · ${pending} pending` : "Graded props"}
+            </div>
           </div>
           <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 20px", textAlign: "center" }}>
-            <div style={{ fontSize: 24, fontWeight: 700, color: hitPct >= 55 ? "var(--green)" : hitPct >= 45 ? "var(--accent)" : "var(--red)" }}>
-              {hitPct}%
+            <div style={{ fontSize: 24, fontWeight: 700, color: graded === 0 ? "var(--muted)" : hitPct >= 55 ? "var(--green)" : hitPct >= 45 ? "var(--accent)" : "var(--red)" }}>
+              {graded === 0 ? "—" : `${hitPct}%`}
             </div>
             <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{hits} HIT · {misses} MISS</div>
           </div>
@@ -259,15 +291,17 @@ export default function PropResultsPage() {
         <div style={{ display: "flex", gap: 6, marginBottom: 14, alignItems: "center" }}>
           <button style={btn(view === "table")}   onClick={() => setView("table")}>Results Table</button>
           <button style={btn(view === "players")} onClick={() => setView("players")}>By Player</button>
-          <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: 8 }}>{total} props</span>
+          <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: 8 }}>
+            {total} props{pending > 0 ? ` (${pending} pending)` : ""}
+          </span>
         </div>
       )}
 
       {/* ── Results Table ── */}
-      {view === "table" && total > 0 && (
+      {view === "table" && rows.length > 0 && (
         <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           {/* Table header */}
-          <div style={{ display: "grid", gridTemplateColumns: "90px 160px 120px 60px 55px 60px 70px 60px 100px", gap: 0, padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "90px 160px 110px 60px 55px 60px 70px 60px 110px", gap: 0, padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
             <span>Date</span>
             <span>Player</span>
             <span>Market</span>
@@ -276,22 +310,33 @@ export default function PropResultsPage() {
             <span>Score</span>
             <span>Result</span>
             <span>Odds</span>
-            <span>Book</span>
+            <span>Matchup</span>
           </div>
           {rows.map(r => (
-            <div key={r.id} style={{ display: "grid", gridTemplateColumns: "90px 160px 120px 60px 55px 60px 70px 60px 100px", gap: 0, padding: "7px 12px", borderBottom: "1px solid var(--border)", fontSize: 13, alignItems: "center" }}>
+            <div key={r.id} style={{
+              display: "grid", gridTemplateColumns: "90px 160px 110px 60px 55px 60px 70px 60px 110px",
+              gap: 0, padding: "7px 12px", borderBottom: "1px solid var(--border)", fontSize: 13,
+              alignItems: "center", opacity: r.is_active === 0 ? 0.45 : 1,
+            }}>
               <span style={{ fontSize: 11, color: "var(--muted)" }}>{r.game_date ?? "—"}</span>
-              <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.player_name}</span>
+              <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
+                {r.player_name}
+                {r.is_best_side === 1 && <span style={{ fontSize: 9, background: "var(--accent)", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>PICK</span>}
+              </span>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{r.market_label}</span>
               <span style={{ fontSize: 11, color: r.side === "under" ? "var(--orange)" : "var(--accent)" }}>
                 {(r.side ?? "over").toUpperCase()}
               </span>
               <span>{r.line}</span>
               <ScoreBadge score={r.value_score ?? 0} />
-              <LegResultBadge result={r.leg_result} />
-              <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.over_odds?.toFixed(2)}</span>
-              <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                {r.is_paddy_power ? "🍀 PP" : bookmakerLabel(r.bookmaker)}
+              {r.leg_result ? (
+                <LegResultBadge result={r.leg_result} />
+              ) : (
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>—</span>
+              )}
+              <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.decimal_odds?.toFixed(2) ?? "—"}</span>
+              <span style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {r.matchup ?? (r.is_paddy_power ? "🍀 PP" : bookmakerLabel(r.bookmaker))}
               </span>
             </div>
           ))}
@@ -305,7 +350,7 @@ export default function PropResultsPage() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 70px 70px 100px 80px", gap: 0, padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
             <span>Player</span>
             <span>Market</span>
-            <span>Total</span>
+            <span>Graded</span>
             <span>Hits</span>
             <span style={{ minWidth: 160 }}>Hit Rate</span>
             <span>Avg Score</span>
@@ -314,10 +359,16 @@ export default function PropResultsPage() {
             <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 130px 70px 70px 100px 80px", gap: 0, padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 13, alignItems: "center" }}>
               <span style={{ fontWeight: 600 }}>{p.player}</span>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{p.market}</span>
-              <span style={{ color: "var(--muted)" }}>{p.total}</span>
+              <span style={{ color: "var(--muted)" }}>
+                {p.total}{(p.pending ?? 0) > 0 && <span style={{ fontSize: 10, color: "var(--orange)" }}> +{p.pending}</span>}
+              </span>
               <span style={{ color: "var(--green)" }}>{p.hits}</span>
               <div style={{ paddingRight: 16 }}>
-                <PctBar pct={p.hit_pct} hits={p.hits} total={p.total} />
+                {p.total > 0 ? (
+                  <PctBar pct={p.hit_pct} hits={p.hits} total={p.total} />
+                ) : (
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>pending</span>
+                )}
               </div>
               <ScoreBadge score={p.avg_score} />
             </div>
