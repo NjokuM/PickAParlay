@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, PropResult, ResultsStatus } from "@/lib/api";
 import { ScoreBadge, LegResultBadge } from "@/components/Badge";
+import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ function bookmakerLabel(b: string) {
 interface MarketStat { label: string; total: number; hits: number; pct: number }
 interface PlayerStat {
   player: string; market: string;
+  nba_player_id: number | null;
   total: number; hits: number; hit_pct: number; avg_score: number;
   pending?: number;
 }
@@ -50,12 +52,13 @@ function computeMarketStats(rows: PropResult[]): MarketStat[] {
 function computePlayerStats(rows: PropResult[]): PlayerStat[] {
   const acc: Record<string, {
     player: string; market: string;
+    nba_player_id: number | null;
     graded: number; hits: number; scores: number[];
     pending: number;
   }> = {};
   for (const r of rows) {
     const key = `${r.player_name}||${r.market_label}`;
-    if (!acc[key]) acc[key] = { player: r.player_name, market: r.market_label, graded: 0, hits: 0, scores: [], pending: 0 };
+    if (!acc[key]) acc[key] = { player: r.player_name, market: r.market_label, nba_player_id: r.nba_player_id, graded: 0, hits: 0, scores: [], pending: 0 };
     acc[key].scores.push(r.value_score ?? 0);
     if (r.leg_result == null) { acc[key].pending++; continue; }
     acc[key].graded++;
@@ -63,13 +66,14 @@ function computePlayerStats(rows: PropResult[]): PlayerStat[] {
   }
   return Object.values(acc)
     .map(v => ({
-      player:    v.player,
-      market:    v.market,
-      total:     v.graded,                     // graded count for hit-rate calc
-      hits:      v.hits,
-      hit_pct:   v.graded ? Math.round(v.hits / v.graded * 100) : 0,
-      avg_score: Math.round(v.scores.reduce((a, b) => a + b, 0) / v.scores.length),
-      pending:   v.pending,
+      player:         v.player,
+      market:         v.market,
+      nba_player_id:  v.nba_player_id,
+      total:          v.graded,                     // graded count for hit-rate calc
+      hits:           v.hits,
+      hit_pct:        v.graded ? Math.round(v.hits / v.graded * 100) : 0,
+      avg_score:      Math.round(v.scores.reduce((a, b) => a + b, 0) / v.scores.length),
+      pending:        v.pending,
     }))
     .sort((a, b) => b.total - a.total || b.hit_pct - a.hit_pct);
 }
@@ -394,8 +398,9 @@ export default function PropResultsPage() {
       {view === "table" && rows.length > 0 && (
         <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           {/* Table header */}
-          <div style={{ display: "grid", gridTemplateColumns: "90px 160px 110px 60px 55px 60px 70px 60px 110px", gap: 0, padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
             <span>Date</span>
+            <span />
             <span>Player</span>
             <span>Market</span>
             <span>Side</span>
@@ -407,11 +412,12 @@ export default function PropResultsPage() {
           </div>
           {rows.map(r => (
             <div key={r.id} style={{
-              display: "grid", gridTemplateColumns: "90px 160px 110px 60px 55px 60px 70px 60px 110px",
-              gap: 0, padding: "7px 12px", borderBottom: "1px solid var(--border)", fontSize: 13,
+              display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px",
+              gap: "0 8px", padding: "7px 12px", borderBottom: "1px solid var(--border)", fontSize: 13,
               alignItems: "center", opacity: r.is_active === 0 ? 0.45 : 1,
             }}>
               <span style={{ fontSize: 11, color: "var(--muted)" }}>{r.game_date ?? "—"}</span>
+              <PlayerHeadshot playerId={r.nba_player_id} size={36} />
               <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
                 {r.player_name}
                 {r.is_best_side === 1 && <span style={{ fontSize: 9, background: "var(--accent)", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>PICK</span>}
@@ -440,7 +446,8 @@ export default function PropResultsPage() {
       {view === "players" && total > 0 && (
         <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           {/* Header */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 70px 70px 100px 80px", gap: 0, padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 70px 70px 100px 80px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+            <span />
             <span>Player</span>
             <span>Market</span>
             <span>Graded</span>
@@ -449,7 +456,8 @@ export default function PropResultsPage() {
             <span>Avg Score</span>
           </div>
           {byPlayer.map((p, i) => (
-            <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 130px 70px 70px 100px 80px", gap: 0, padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 13, alignItems: "center" }}>
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 70px 70px 100px 80px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 13, alignItems: "center" }}>
+              <PlayerHeadshot playerId={p.nba_player_id} size={36} />
               <span style={{ fontWeight: 600 }}>{p.player}</span>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{p.market}</span>
               <span style={{ color: "var(--muted)" }}>

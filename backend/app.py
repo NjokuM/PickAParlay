@@ -253,6 +253,7 @@ def _slip_to_response(slip: BetSlip, odds_str: str) -> dict:
         "legs": [
             {
                 "player_name": leg.valued_prop.prop.player_name,
+                "player_id": leg.valued_prop.prop.nba_player_id,
                 "market": leg.valued_prop.prop.market,
                 "market_label": config.MARKET_MAP.get(
                     leg.valued_prop.prop.market, {}
@@ -686,6 +687,7 @@ def _run_ladder_background(season: str) -> None:
                 "legs": [
                     {
                         "player_name": vp.prop.player_name,
+                        "player_id": vp.prop.nba_player_id,
                         "market": vp.prop.market,
                         "market_label": market_label,
                         "line": vp.prop.line,

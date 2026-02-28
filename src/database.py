@@ -160,6 +160,12 @@ def init_db() -> None:
         except Exception:
             pass
 
+        # Migration: add nba_player_id for headshot display
+        try:
+            conn.execute("ALTER TABLE slip_legs ADD COLUMN nba_player_id INTEGER")
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Grading runs
@@ -244,8 +250,8 @@ def save_slip(
                     bookmaker, is_paddy_power, value_score,
                     score_consistency, score_vs_opponent, score_home_away,
                     score_injury, score_team_context, score_season_avg, score_blowout_risk,
-                    score_volume_context, side, game_date)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    score_volume_context, side, game_date, nba_player_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     slip_id,
                     vp.prop.player_name,
@@ -266,6 +272,7 @@ def save_slip(
                     factor_scores.get("Volume & Usage"),
                     leg.side,
                     vp.prop.game.game_date if vp.prop.game else None,
+                    vp.prop.nba_player_id,
                 ),
             )
 

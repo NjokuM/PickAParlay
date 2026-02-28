@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { api, Slip, LadderStatus } from "@/lib/api";
 import { FactorGrid } from "@/components/FactorBar";
 import { ScoreBadge } from "@/components/Badge";
+import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 
 function bookmakerLabel(b: string) {
   const m: Record<string, string> = { paddypower: "Paddy Power", draftkings: "DraftKings", fanduel: "FanDuel", betmgm: "BetMGM" };
@@ -216,8 +217,9 @@ function SlipCard({
       {/* Legs summary */}
       <div style={{ padding: "12px 16px" }}>
         {slip.legs.map((leg, li) => (
-          <div key={li} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 0", borderBottom: li < slip.legs.length - 1 ? "1px solid var(--border)" : "none" }}>
+          <div key={li} style={{ display: "flex", alignItems: "center", gap: 14, padding: "6px 0", borderBottom: li < slip.legs.length - 1 ? "1px solid var(--border)" : "none" }}>
             <ScoreBadge score={leg.value_score} />
+            <PlayerHeadshot playerId={leg.player_id} size={40} />
             <div style={{ flex: 1 }}>
               <span style={{ fontWeight: 600 }}>{leg.player_name}</span>
               <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 13 }}>

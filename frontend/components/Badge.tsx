@@ -14,15 +14,19 @@ export function ScoreBadge({ score }: { score: number }) {
 
   return (
     <span style={{
-      display: "inline-block",
-      padding: "2px 8px",
-      borderRadius: 4,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "4px 5px",
+      borderRadius: 6,
       background: bg,
       color,
       fontSize: 12,
       fontWeight: 700,
-      minWidth: 44,
+      minWidth: 38,
+      height: 28,
       textAlign: "center",
+      lineHeight: 1,
     }}>
       {score.toFixed(1)}
     </span>

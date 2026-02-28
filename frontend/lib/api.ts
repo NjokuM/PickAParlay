@@ -63,6 +63,7 @@ export interface Prop {
 
 export interface SlipLeg {
   player_name: string;
+  player_id?: number;
   market: string;
   market_label: string;
   line: number;
@@ -91,6 +92,7 @@ export interface SavedLeg {
   id: number;
   slip_id: number;
   player_name: string;
+  nba_player_id: number | null;
   market: string;
   market_label: string;
   line: number;

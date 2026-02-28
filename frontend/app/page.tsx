@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { api, Prop, Game, RefreshStatus } from "@/lib/api";
 import { FactorGrid } from "@/components/FactorBar";
 import { ScoreBadge, RecoBadge } from "@/components/Badge";
+import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 
 const MARKETS = [
   "All Markets", "Points", "Assists", "Rebounds", "Pts+Reb+Ast",
@@ -169,8 +170,8 @@ export default function DashboardPage() {
       ) : (
         <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           {/* Header row */}
-          <div style={{ display: "grid", gridTemplateColumns: "56px 1fr 130px 80px 56px 72px 110px 20px", padding: "8px 16px", background: "var(--surface2)", fontSize: 11, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid var(--border)" }}>
-            <span>Score</span><span>Player</span><span>Market</span><span>Line</span><span>Odds</span><span>Book</span><span>Game</span><span />
+          <div style={{ display: "grid", gridTemplateColumns: "48px 52px 1fr 130px 80px 56px 72px 110px 20px", gap: "0 10px", padding: "8px 16px", background: "var(--surface2)", fontSize: 11, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid var(--border)" }}>
+            <span>Score</span><span /><span>Player</span><span>Market</span><span>Line</span><span>Odds</span><span>Book</span><span>Game</span><span />
           </div>
 
           {sorted.map((p) => {
@@ -178,8 +179,9 @@ export default function DashboardPage() {
             const isX = expanded === key;
             return (
               <div key={key}>
-                <div onClick={() => setExpanded(isX ? null : key)} style={{ display: "grid", gridTemplateColumns: "56px 1fr 130px 80px 56px 72px 110px 20px", padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: isX ? "var(--surface2)" : "transparent", alignItems: "center" }}>
+                <div onClick={() => setExpanded(isX ? null : key)} style={{ display: "grid", gridTemplateColumns: "48px 52px 1fr 130px 80px 56px 72px 110px 20px", gap: "0 10px", padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: isX ? "var(--surface2)" : "transparent", alignItems: "center" }}>
                   <ScoreBadge score={p.value_score} />
+                  <PlayerHeadshot playerId={p.player_id} size={40} />
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{p.player_name}</div>
                     <RecoBadge reco={p.recommendation} />
