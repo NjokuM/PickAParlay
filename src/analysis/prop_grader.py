@@ -130,11 +130,15 @@ def grade_prop(
     opponent_team_id = game.away_team_id if tonight_is_home else game.home_team_id
     player_team_is_fav = _team_is_favorite(spread, tonight_is_home)
 
+    # Determine starter vs bench from recent minutes (>= 24 MPG = starter)
+    _recent_mpg = float(df_raw["MIN"].head(10).mean()) if (not df_raw.empty and "MIN" in df_raw.columns) else 30.0
+    _player_is_starter = _recent_mpg >= 24.0
+
     f_blowout = blowout_risk.compute(
         spread=spread,
         h2h_avg_margin=h2h_team.get("avg_margin", 0),
         player_team_is_favorite=player_team_is_fav,
-        player_is_starter=True,  # assume starter; could be improved with lineup data
+        player_is_starter=_player_is_starter,
         market=prop.market,
         home_team_id=game.home_team_id,
         away_team_id=game.away_team_id,

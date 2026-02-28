@@ -176,13 +176,15 @@ def match_game_to_event(game: NBAGame, events: list[dict]) -> str | None:
 def get_game_spread(event_id: str) -> float | None:
     """
     Return the spread for the home team (negative = home favourite).
-    Returns None if unavailable.
+    Tries preferred bookmaker first, then falls back to any bookmaker
+    in the configured region.  Returns None if truly unavailable.
     """
     cache_key = f"spread_{event_id}"
     cached = cache_get(cache_key, config.CACHE_TTL["props"])
     if cached is not None:
         return float(cached)
 
+    # Try preferred bookmaker first
     data = _get(
         f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
         {
@@ -191,11 +193,19 @@ def get_game_spread(event_id: str) -> float | None:
             "bookmakers": config.PREFERRED_BOOKMAKER,
         },
     )
-    if not data:
-        return None
+    spread = _extract_spread(data.get("bookmakers", [])) if data else None
 
-    bookmakers = data.get("bookmakers", [])
-    spread = _extract_spread(bookmakers)
+    # Fallback: any bookmaker in the region
+    if spread is None:
+        data = _get(
+            f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
+            {
+                "regions": f"{config.ODDS_REGIONS},us",
+                "markets": "spreads",
+            },
+        )
+        spread = _extract_spread(data.get("bookmakers", [])) if data else None
+
     if spread is not None:
         cache_set(cache_key, spread)
     return spread

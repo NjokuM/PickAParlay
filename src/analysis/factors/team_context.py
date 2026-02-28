@@ -65,7 +65,10 @@ def compute(
     else:
         evidence.append("Pace data unavailable")
 
-    # Back-to-back: rest penalty for OVER, slight boost for UNDER (fatigue = fewer opportunities)
+    # Rest / schedule fatigue — direction-aware
+    rest_days = form.get("rest_days", 2)
+    games_in_4 = form.get("games_in_last_4", 1)
+
     if form.get("back_to_back"):
         if side == "under":
             score = min(100.0, score * 1.10)
@@ -73,8 +76,24 @@ def compute(
         else:
             score *= 0.85
             evidence.append("⚠️  Playing on back-to-back (rest penalty applied)")
+    elif games_in_4 >= 3:
+        # Heavy schedule: 3+ games in 4 nights (not a strict B2B but still fatiguing)
+        if side == "under":
+            score = min(100.0, score * 1.05)
+            evidence.append(f"Heavy schedule ({games_in_4} games in 4 nights) — slight UNDER boost")
+        else:
+            score *= 0.90
+            evidence.append(f"⚠️  Heavy schedule ({games_in_4} games in 4 nights) — fatigue penalty")
+    elif rest_days >= 2:
+        # Extra rest: 2+ days off → player should be fresher
+        if side == "over":
+            score = min(100.0, score * 1.05)
+            evidence.append(f"Well-rested ({rest_days} days off) — slight OVER boost")
+        else:
+            score *= 0.95
+            evidence.append(f"Well-rested ({rest_days} days off) — slightly works against UNDER")
     else:
-        evidence.append("No back-to-back tonight ✓")
+        evidence.append(f"Normal rest ({rest_days} day{'s' if rest_days != 1 else ''} off) ✓")
 
     score = round(min(100.0, max(0.0, score)), 1)
 
@@ -89,6 +108,8 @@ def compute(
             "streak": streak,
             "pace": pace_data,
             "back_to_back": form.get("back_to_back", False),
+            "rest_days": rest_days,
+            "games_in_last_4": games_in_4,
         },
         confidence=1.0,
     )

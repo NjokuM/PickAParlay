@@ -18,13 +18,38 @@ from src.api.injury_api import (
     is_player_unavailable,
     injury_severity_score,
 )
+from src.api.nba_stats import get_league_player_usage
 
-# Simplified list of high-usage / star players whose absence matters most
-# The system uses a usage-proxy: any player with "star" role matters more
-# In practice we check minutes/usage from stats — here we use a heuristic
-_HIGH_USAGE_KEYWORDS = ["harden", "doncic", "curry", "james", "giannis", "embiid",
-                        "jokic", "durant", "tatum", "mitchell", "brown", "young",
-                        "booker", "lillard", "george", "westbrook", "fox", "lavine"]
+# Fallback keyword list — used ONLY when league-wide stats are unavailable
+_FALLBACK_STAR_KEYWORDS = ["harden", "doncic", "curry", "james", "giannis", "embiid",
+                           "jokic", "durant", "tatum", "mitchell", "brown", "young",
+                           "booker", "lillard", "george", "westbrook", "fox", "lavine"]
+
+# Thresholds for dynamic high-usage detection
+_HIGH_USAGE_MPG = 24.0    # starter-level minutes
+_HIGH_USAGE_FGA = 12.0    # significant shot volume
+
+
+def _is_high_usage(player_name: str) -> bool:
+    """
+    Check if a player is high-usage based on their season stats (MPG >= 24 or FGA >= 12).
+    Falls back to the keyword list if league stats are unavailable.
+    """
+    usage = get_league_player_usage()
+    if usage:
+        key = player_name.strip().lower()
+        stats = usage.get(key)
+        if stats:
+            return stats["mpg"] >= _HIGH_USAGE_MPG or stats["fga"] >= _HIGH_USAGE_FGA
+        # Player not found in league stats — try fuzzy match on last name
+        last_name = key.split()[-1] if key else ""
+        for name, stats in usage.items():
+            if last_name and last_name in name:
+                if stats["mpg"] >= _HIGH_USAGE_MPG or stats["fga"] >= _HIGH_USAGE_FGA:
+                    return True
+        return False
+    # Fallback: use keyword list when API data unavailable
+    return any(kw in player_name.lower() for kw in _FALLBACK_STAR_KEYWORDS)
 
 
 def compute(
@@ -120,7 +145,7 @@ def _assess_teammate_impact(
         if not is_player_unavailable(inj.status):
             continue
 
-        is_star = any(kw in inj.player_name.lower() for kw in _HIGH_USAGE_KEYWORDS)
+        is_star = _is_high_usage(inj.player_name)
         if not is_star:
             continue
 
@@ -169,7 +194,7 @@ def _assess_opponent_impact(
     for inj in opponent_injuries:
         if not is_player_unavailable(inj.status):
             continue
-        is_star = any(kw in inj.player_name.lower() for kw in _HIGH_USAGE_KEYWORDS)
+        is_star = _is_high_usage(inj.player_name)
         if not is_star:
             continue
 

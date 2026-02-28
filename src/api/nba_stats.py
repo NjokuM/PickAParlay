@@ -19,6 +19,7 @@ from nba_api.stats.endpoints import (
     PlayerGameLog,
     PlayerCareerStats,
     LeagueDashTeamStats,
+    LeagueDashPlayerStats,
     TeamGameLog,
     CommonPlayerInfo,
 )
@@ -346,18 +347,30 @@ def get_team_recent_form(team_id: int, season: str | None = None, last_n: int = 
     wins = int((recent["WL"] == "W").sum())
     losses = int((recent["WL"] == "L").sum())
 
-    # Back-to-back: the team's most recent game was yesterday (tonight is the second game)
+    # Rest analysis — B2B, rest days, heavy schedule detection
     b2b = False
+    rest_days = 2  # default: well-rested
+    games_in_last_4 = 0
     if len(df) >= 1:
         last_game_ts = df.iloc[0]["GAME_DATE"]
         last_game_date = last_game_ts.date() if hasattr(last_game_ts, "date") else last_game_ts
         today_et = datetime.now(_ET).date()
-        b2b = (today_et - last_game_date).days == 1
+        gap = (today_et - last_game_date).days
+        b2b = gap == 1
+        rest_days = max(0, gap - 1)  # 0 = B2B, 1 = normal, 2+ = extra rest
+        # Games in last 4 calendar days (including today's upcoming game)
+        four_days_ago = today_et - timedelta(days=4)
+        games_in_last_4 = int((df["GAME_DATE"].dt.date >= four_days_ago).sum())
 
     # Streak
     streak = _compute_streak(df["WL"].tolist())
 
-    result = {"wins": wins, "losses": losses, "streak": streak, "back_to_back": b2b}
+    result = {
+        "wins": wins, "losses": losses, "streak": streak,
+        "back_to_back": b2b,
+        "rest_days": rest_days,
+        "games_in_last_4": games_in_last_4,
+    }
     cache_set(cache_key, result)
     return result
 
@@ -476,3 +489,47 @@ def get_player_current_team(player_id: int) -> str | None:
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# League-wide player usage stats (for dynamic high-usage detection)
+# ---------------------------------------------------------------------------
+
+def get_league_player_usage(season: str | None = None) -> dict[str, dict]:
+    """
+    Return a dict of {player_name_lower: {mpg, fga, usg_pct}} for all NBA players.
+    Cached for 12 hours. Single API call via LeagueDashPlayerStats.
+    """
+    if season is None:
+        season = config.DEFAULT_SEASON
+    cache_key = f"league_player_usage_{season}"
+    cached = cache_get(cache_key, config.CACHE_TTL.get("player_team", 43200))
+    if isinstance(cached, dict) and cached:
+        return cached
+
+    _sleep()
+    try:
+        stats = LeagueDashPlayerStats(
+            season=season,
+            per_mode_detailed="PerGame",
+        )
+        df = stats.get_data_frames()[0]
+    except Exception:
+        return {}
+
+    if df.empty:
+        return {}
+
+    result: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        name = str(row.get("PLAYER_NAME", "")).strip().lower()
+        if not name:
+            continue
+        result[name] = {
+            "mpg": float(row.get("MIN", 0) or 0),
+            "fga": float(row.get("FGA", 0) or 0),
+            "usg_pct": float(row.get("USG_PCT", 0) or 0) * 100,  # convert to percentage
+        }
+
+    cache_set(cache_key, result)
+    return result
