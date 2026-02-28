@@ -346,56 +346,116 @@ def record_leg_result(leg_id: int, result: str) -> None:
 
 def get_analytics() -> dict:
     """
-    Return aggregate accuracy statistics for the history page / CLI.
-    Only includes slips/legs where outcomes have been recorded.
+    Return accuracy analytics from graded_props (picks = is_best_side=1).
+    Includes: overall hit rate, value-score calibration, per-factor calibration,
+    hit rate by market, hit rate by side, and daily trend.
+    Falls back to slip-level P&L stats from saved_slips.
     """
     with _connect() as conn:
-        # Overall slip win rate
+        # ── Picks-only base filter ──────────────────────────────────────
+        BASE = "FROM graded_props WHERE leg_result IS NOT NULL AND is_best_side = 1"
+
+        # Overall pick accuracy
+        total_picks = conn.execute(f"SELECT COUNT(*) {BASE}").fetchone()[0]
+        total_hits  = conn.execute(
+            f"SELECT COUNT(*) {BASE} AND leg_result = 'HIT'"
+        ).fetchone()[0]
+        total_miss  = total_picks - total_hits
+
+        # ── Value-score calibration (5-point buckets) ───────────────────
+        value_cal = conn.execute(
+            f"""SELECT
+                   CAST(value_score / 5 AS INTEGER) * 5 AS bucket,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+               {BASE} AND value_score IS NOT NULL
+               GROUP BY bucket
+               ORDER BY bucket"""
+        ).fetchall()
+
+        # ── Per-factor calibration (10-point buckets) ───────────────────
+        factor_cols = [
+            ("score_consistency",    "Consistency"),
+            ("score_vs_opponent",    "vs Opponent"),
+            ("score_home_away",      "Home/Away"),
+            ("score_injury",         "Injury"),
+            ("score_team_context",   "Team Context"),
+            ("score_season_avg",     "Season Avg"),
+            ("score_blowout_risk",   "Blowout Risk"),
+            ("score_volume_context", "Volume & Usage"),
+        ]
+        factor_calibration: dict[str, list[dict]] = {}
+        for col, label in factor_cols:
+            rows = conn.execute(
+                f"""SELECT
+                       CAST({col} / 10 AS INTEGER) * 10 AS bucket,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+                   {BASE} AND {col} IS NOT NULL
+                   GROUP BY bucket
+                   ORDER BY bucket"""
+            ).fetchall()
+            factor_calibration[label] = [dict(r) for r in rows]
+
+        # ── Hit rate by market ──────────────────────────────────────────
+        by_market = conn.execute(
+            f"""SELECT market_label,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+               {BASE}
+               GROUP BY market_label
+               ORDER BY hits * 1.0 / COUNT(*) DESC"""
+        ).fetchall()
+
+        # ── Hit rate by side (OVER vs UNDER) ────────────────────────────
+        by_side = conn.execute(
+            f"""SELECT side,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+               {BASE}
+               GROUP BY side"""
+        ).fetchall()
+
+        # ── Daily trend ─────────────────────────────────────────────────
+        daily_trend = conn.execute(
+            f"""SELECT game_date,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+               {BASE}
+               GROUP BY game_date
+               ORDER BY game_date"""
+        ).fetchall()
+
+        # ── Slip-level stats (kept for P&L tracking) ───────────────────
         total_slips = conn.execute(
             "SELECT COUNT(*) FROM saved_slips WHERE outcome IS NOT NULL"
         ).fetchone()[0]
         wins = conn.execute(
             "SELECT COUNT(*) FROM saved_slips WHERE outcome = 'WIN'"
         ).fetchone()[0]
-
-        # Leg hit rate by market
-        market_stats = conn.execute(
-            """SELECT market_label,
-                      COUNT(*) AS total,
-                      SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
-               FROM slip_legs
-               WHERE leg_result IS NOT NULL
-               GROUP BY market_label
-               ORDER BY hits * 1.0 / COUNT(*) DESC"""
-        ).fetchall()
-
-        # P&L
         pnl_row = conn.execute(
             "SELECT SUM(profit_loss) FROM saved_slips WHERE profit_loss IS NOT NULL"
         ).fetchone()
         total_pnl = pnl_row[0] or 0.0
 
-        # Factor score calibration buckets (consistency score vs actual hit rate)
-        calibration = conn.execute(
-            """SELECT
-                   CAST(score_consistency / 10 AS INTEGER) * 10 AS bucket,
-                   COUNT(*) AS total,
-                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
-               FROM slip_legs
-               WHERE leg_result IS NOT NULL AND score_consistency IS NOT NULL
-               GROUP BY bucket
-               ORDER BY bucket"""
-        ).fetchall()
-
         return {
-            "overall": {
+            "picks": {
+                "total": total_picks,
+                "hits": total_hits,
+                "misses": total_miss,
+                "hit_rate": round(total_hits / total_picks, 3) if total_picks else 0,
+            },
+            "slips": {
                 "total_slips": total_slips,
                 "wins": wins,
                 "win_rate": round(wins / total_slips, 3) if total_slips else 0,
                 "total_pnl": round(total_pnl, 2),
             },
-            "by_market": [dict(r) for r in market_stats],
-            "calibration": [dict(r) for r in calibration],
+            "value_calibration": [dict(r) for r in value_cal],
+            "factor_calibration": factor_calibration,
+            "by_market": [dict(r) for r in by_market],
+            "by_side": [dict(r) for r in by_side],
+            "daily_trend": [dict(r) for r in daily_trend],
         }
 
 

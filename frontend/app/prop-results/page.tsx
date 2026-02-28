@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { api, PropResult } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { api, PropResult, ResultsStatus } from "@/lib/api";
 import { ScoreBadge, LegResultBadge } from "@/components/Badge";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -113,6 +113,47 @@ export default function PropResultsPage() {
   const [rows,       setRows]       = useState<PropResult[]>([]);
   const [loading,    setLoading]    = useState(false);
   const [loaded,     setLoaded]     = useState(false);
+
+  // ── Check Results state ─────────────────────────────────────────────────
+  const [checkDate,   setCheckDate]   = useState(nDaysAgo(1));
+  const [checkStatus, setCheckStatus] = useState<ResultsStatus | null>(null);
+  const [checking,    setChecking]    = useState(false);
+  const checkPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  async function autoCheck() {
+    setChecking(true);
+    setCheckStatus(null);
+    try {
+      await api.results.check(checkDate);
+      const initial = await api.results.status();
+      setCheckStatus(initial);
+      if (initial.status === "running") {
+        checkPollRef.current = setInterval(async () => {
+          try {
+            const s = await api.results.status();
+            setCheckStatus(s);
+            if (s.status !== "running") {
+              clearInterval(checkPollRef.current!);
+              checkPollRef.current = null;
+              setChecking(false);
+              if (s.status === "done") load();   // auto-refresh table
+            }
+          } catch { /* ignore poll errors */ }
+        }, 2000);
+      } else {
+        setChecking(false);
+        if (initial.status === "done") load();
+      }
+    } catch (e) {
+      console.error(e);
+      setChecking(false);
+    }
+  }
+
+  // Cleanup poll on unmount
+  useEffect(() => () => {
+    if (checkPollRef.current) clearInterval(checkPollRef.current);
+  }, []);
 
   async function load() {
     setLoading(true);
@@ -247,6 +288,58 @@ export default function PropResultsPage() {
         >
           {loading ? "Loading…" : "Load Results"}
         </button>
+      </div>
+
+      {/* ── Check Results control ── */}
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px", marginBottom: 20, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Check Results</div>
+        <input
+          type="date"
+          value={checkDate}
+          onChange={e => setCheckDate(e.target.value)}
+          style={{ ...S, width: 140 }}
+        />
+        <button
+          style={{ ...btn(true), opacity: checking ? 0.6 : 1 }}
+          onClick={autoCheck}
+          disabled={checking}
+        >
+          {checking ? "Checking…" : "Check Results"}
+        </button>
+
+        {checkStatus && (
+          <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12 }}>
+            {checkStatus.status === "running" && (
+              <span style={{ color: "var(--accent)" }}>Fetching box scores…</span>
+            )}
+            {checkStatus.status === "done" && (
+              <>
+                <span style={{ color: "var(--green)", fontWeight: 600 }}>
+                  ✓ {checkStatus.hit} HIT / {checkStatus.miss} MISS
+                  {checkStatus.no_data > 0 && ` · ${checkStatus.no_data} no data`}
+                </span>
+                {checkStatus.slips_resolved > 0 && (
+                  <span style={{ color: "var(--accent)" }}>
+                    {checkStatus.slips_resolved} slip{checkStatus.slips_resolved !== 1 ? "s" : ""} auto-resolved
+                  </span>
+                )}
+              </>
+            )}
+            {checkStatus.status === "error" && (
+              <span style={{ color: "var(--red)" }}>Error: {checkStatus.error}</span>
+            )}
+          </div>
+        )}
+
+        {!checkStatus && loaded && pending > 0 && !checking && (
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>
+            {pending} props pending — select a date and check to grade them
+          </span>
+        )}
+
+        <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
+          Grades props from NBA box scores
+        </div>
       </div>
 
       {/* Summary stats — only shown when data loaded */}

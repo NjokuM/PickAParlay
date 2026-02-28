@@ -129,14 +129,23 @@ export interface SavedSlip {
 }
 
 export interface Analytics {
-  overall: {
+  picks: {
+    total: number;
+    hits: number;
+    misses: number;
+    hit_rate: number;
+  };
+  slips: {
     total_slips: number;
     wins: number;
     win_rate: number;
     total_pnl: number;
   };
+  value_calibration: { bucket: number; total: number; hits: number }[];
+  factor_calibration: Record<string, { bucket: number; total: number; hits: number }[]>;
   by_market: { market_label: string; total: number; hits: number }[];
-  calibration: { bucket: number; total: number; hits: number }[];
+  by_side: { side: string; total: number; hits: number }[];
+  daily_trend: { game_date: string; total: number; hits: number }[];
 }
 
 export interface Credits {
