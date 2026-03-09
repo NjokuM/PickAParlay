@@ -13,6 +13,7 @@ import dataclasses
 import os
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
@@ -28,7 +29,7 @@ import src.cache as cache
 import src.database as database
 from src.api import injury_api, nba_stats, odds_api
 from src.analysis import bet_builder, prop_grader, results_checker
-from src.models import BetSlip, FactorResult, NBAGame, PlayerProp, ValuedProp
+from src.models import BetLeg, BetSlip, FactorResult, NBAGame, PlayerProp, ValuedProp
 
 app = FastAPI(title="PickAParlay API", version="1.0.0")
 
@@ -49,6 +50,11 @@ app.add_middleware(
 @app.on_event("startup")
 def startup() -> None:
     database.init_db()
+    # One-time repair: restore regular props deactivated by the old
+    # stale-marking bug that didn't scope by is_alternate.
+    repaired = database.repair_deactivated_regular_props()
+    if repaired:
+        print(f"[startup] Repaired {repaired} regular props that were incorrectly deactivated.")
 
 
 # ---------------------------------------------------------------------------
@@ -100,10 +106,18 @@ def _run_refresh_background(season: str) -> None:
 
         # 3. Events + props
         events = odds_api.get_events()
+        matched_games = 0
+        unmatched_games: list[str] = []
         for game in games:
             event_id = odds_api.match_game_to_event(game, events)
             if event_id:
                 game.odds_event_id = event_id
+                matched_games += 1
+            else:
+                unmatched_games.append(f"{game.away_team} @ {game.home_team}")
+        if unmatched_games:
+            print(f"[refresh] ⚠️ {len(unmatched_games)} games unmatched to Odds API: {unmatched_games}")
+        print(f"[refresh] Matched {matched_games}/{len(games)} games to Odds API events")
 
         all_raw_props: list = []
         for game in games:
@@ -119,6 +133,16 @@ def _run_refresh_background(season: str) -> None:
                 props = odds_api.build_player_props(raw, game, player_id_map)
                 all_raw_props.extend(props)
 
+        # Deduplicate raw props (Odds API can return dupes across event IDs)
+        seen_props: set[tuple] = set()
+        deduped: list = []
+        for p in all_raw_props:
+            k = (p.player_name, p.market, p.line, p.bookmaker)
+            if k not in seen_props:
+                seen_props.add(k)
+                deduped.append(p)
+        all_raw_props = deduped
+
         with _refresh_lock:
             _refresh_state["props_total"] = len(all_raw_props)
 
@@ -131,7 +155,21 @@ def _run_refresh_background(season: str) -> None:
                 )
             return
 
-        # 4. Grade props (both OVER and UNDER sides)
+        # 4a. Pre-warm cache — fetch game logs + current team in parallel
+        #     This means grade_prop() will hit cache instantly (no sequential sleeps)
+        unique_pids = list({p.nba_player_id for p in all_raw_props if p.nba_player_id})
+
+        def _prefetch(pid: int) -> None:
+            try:
+                nba_stats.get_player_game_log(pid, season=season)
+                nba_stats.get_player_current_team(pid)
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            pool.map(_prefetch, unique_pids)
+
+        # 4b. Grade props (both OVER and UNDER sides) — fast now, all cache hits
         all_valued_props: list[ValuedProp] = []
         for i, prop in enumerate(all_raw_props):
             vp_over = prop_grader.grade_prop(prop, injuries, season=season, side="over")
@@ -212,13 +250,19 @@ def _vp_from_dict(d: dict) -> ValuedProp:
 
 def _vp_to_response(vp: ValuedProp) -> dict:
     g = vp.prop.game
+    side = vp.backing_data.get("side", "over")
+    # Look up graded_props ID so frontend can use it for custom slip builder
+    prop_id = database.get_graded_prop_id(
+        vp.prop.player_name, vp.prop.market, vp.prop.line, side, g.game_date,
+    )
     return {
+        "prop_id": prop_id,
         "player_name": vp.prop.player_name,
         "player_id": vp.prop.nba_player_id,
         "market": vp.prop.market,
-        "market_label": config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market),
+        "market_label": config.get_market_label(vp.prop.market),
         "line": vp.prop.line,
-        "side": vp.backing_data.get("side", "over"),
+        "side": side,
         "over_odds": vp.prop.over_odds_decimal,
         "bookmaker": vp.prop.bookmaker,
         "is_paddy_power": vp.prop.is_paddy_power,
@@ -255,9 +299,7 @@ def _slip_to_response(slip: BetSlip, odds_str: str) -> dict:
                 "player_name": leg.valued_prop.prop.player_name,
                 "player_id": leg.valued_prop.prop.nba_player_id,
                 "market": leg.valued_prop.prop.market,
-                "market_label": config.MARKET_MAP.get(
-                    leg.valued_prop.prop.market, {}
-                ).get("label", leg.valued_prop.prop.market),
+                "market_label": config.get_market_label(leg.valued_prop.prop.market),
                 "line": leg.valued_prop.prop.line,
                 "side": leg.side,
                 "over_odds": leg.decimal_odds,
@@ -317,18 +359,21 @@ def _load_valued_props() -> list[ValuedProp]:
 
 @app.get("/api/tonight")
 def get_tonight() -> list[dict]:
-    """Tonight's NBA games (ET date)."""
+    """Tonight's NBA games (ET date), deduplicated by game_id."""
     games = nba_stats.get_todays_games()
-    return [
-        {
-            "game_id": g.game_id,
-            "home_team": g.home_team,
-            "away_team": g.away_team,
-            "matchup": f"{g.away_team} @ {g.home_team}",
-            "game_date": g.game_date,
-        }
-        for g in games
-    ]
+    seen_ids: set[str] = set()
+    result = []
+    for g in games:
+        if g.game_id not in seen_ids:
+            seen_ids.add(g.game_id)
+            result.append({
+                "game_id": g.game_id,
+                "home_team": g.home_team,
+                "away_team": g.away_team,
+                "matchup": f"{g.away_team} @ {g.home_team}",
+                "game_date": g.game_date,
+            })
+    return result
 
 
 @app.get("/api/props")
@@ -358,7 +403,7 @@ def get_props(
             elif vp.prop.bookmaker != bookmaker:
                 continue
         if market:
-            ml = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
+            ml = config.get_market_label(vp.prop.market)
             if market.lower() not in ml.lower():
                 continue
         if side and vp.backing_data.get("side", "over") != side.lower():
@@ -490,6 +535,96 @@ def save_slip_endpoint(req: SaveSlipRequest) -> dict:
     return {"slip_id": slip_id, "saved": True}
 
 
+# ---------------------------------------------------------------------------
+# Custom slip builder
+# ---------------------------------------------------------------------------
+
+class CustomSlipRequest(BaseModel):
+    leg_ids: list[int]  # graded_props row IDs
+
+
+@app.post("/api/slips/custom")
+def save_custom_slip(req: CustomSlipRequest) -> dict:
+    """Save a user-assembled custom slip from graded_props IDs."""
+    if not req.leg_ids:
+        raise HTTPException(status_code=400, detail="No legs provided.")
+
+    rows = database.get_graded_props_by_ids(req.leg_ids)
+    if len(rows) != len(req.leg_ids):
+        found_ids = {r["id"] for r in rows}
+        missing = [lid for lid in req.leg_ids if lid not in found_ids]
+        raise HTTPException(status_code=404, detail=f"Props not found: {missing}")
+
+    legs: list[BetLeg] = []
+    for r in rows:
+        game = NBAGame(
+            game_id="", home_team="", away_team="",
+            home_team_id=0, away_team_id=0,
+            game_date=r.get("game_date", ""),
+            game_time_utc="", odds_event_id="",
+        )
+        if r.get("matchup"):
+            parts = r["matchup"].split(" @ ")
+            if len(parts) == 2:
+                game.away_team = parts[0].strip()
+                game.home_team = parts[1].strip()
+
+        prop = PlayerProp(
+            player_name=r["player_name"],
+            nba_player_id=r.get("nba_player_id") or 0,
+            market=r["market"],
+            line=r["line"],
+            over_odds_decimal=r.get("over_odds") or r.get("decimal_odds") or 0,
+            under_odds_decimal=r.get("under_odds") or 0,
+            bookmaker=r.get("bookmaker", "unknown"),
+            game=game,
+            is_paddy_power=bool(r.get("is_paddy_power")),
+            is_alternate=bool(r.get("is_alternate")),
+        )
+        vp = ValuedProp(
+            prop=prop,
+            value_score=r["value_score"],
+            recommendation=r.get("recommendation", ""),
+            factors=_factors_from_db_row(r),
+            backing_data={},
+        )
+        side = r.get("side", "over")
+        odds = r.get("decimal_odds") or r.get("over_odds") or 0
+        if odds <= 1.0:
+            odds = r.get("over_odds") or 1.01
+        legs.append(BetLeg(valued_prop=vp, side=side, decimal_odds=float(odds)))
+
+    combined_odds = 1.0
+    for leg in legs:
+        combined_odds *= leg.decimal_odds
+    avg_score = sum(l.valued_prop.value_score for l in legs) / len(legs)
+    summary = " | ".join(
+        f"{l.valued_prop.prop.player_name} {l.side.upper()} {l.valued_prop.prop.line}"
+        for l in legs
+    )
+
+    # Check for correlated legs (2+ legs from same game)
+    games = [l.valued_prop.prop.game.home_team + l.valued_prop.prop.game.away_team for l in legs]
+    has_correlated = len(games) != len(set(g for g in games if g))
+
+    slip = BetSlip(
+        legs=legs,
+        combined_decimal_odds=round(combined_odds, 3),
+        target_decimal_odds=None,
+        total_value_score=round(avg_score, 1),
+        summary=summary,
+        has_correlated_legs=has_correlated,
+    )
+
+    run_id = database.get_latest_run_id()
+    slip_id = database.save_slip(
+        slip=slip,
+        target_odds_str="Custom",
+        run_id=run_id,
+    )
+    return {"slip_id": slip_id, "saved": True, "combined_odds": round(combined_odds, 3)}
+
+
 @app.get("/api/history")
 def get_history(limit: int = Query(default=20)) -> list[dict]:
     """Saved slips with nested legs, newest first."""
@@ -532,6 +667,7 @@ def get_prop_results_endpoint(
     picks_only:  bool            = Query(default=False),
     active_only: bool            = Query(default=False),
     graded_only: bool            = Query(default=True),
+    alt_filter:  Optional[str]   = Query(default="regular"),  # "regular"|"alt"|"all"
     limit:       int             = Query(default=500),
 ) -> list[dict]:
     """Individual graded props from graded_props table with optional filters."""
@@ -546,6 +682,30 @@ def get_prop_results_endpoint(
         picks_only=picks_only,
         active_only=active_only,
         graded_only=graded_only,
+        alt_filter=alt_filter,
+        limit=limit,
+    )
+
+
+@app.get("/api/alt-props")
+def get_alt_props(
+    market:    Optional[str]   = Query(default=None),
+    player:    Optional[str]   = Query(default=None),
+    min_score: Optional[float] = Query(default=None),
+    side:      Optional[str]   = Query(default=None),
+    limit:     int             = Query(default=500),
+) -> list[dict]:
+    """Graded alternate props for today, from the graded_props table."""
+    games = nba_stats.get_todays_games()
+    if not games:
+        return []
+    game_date = games[0].game_date
+    return database.get_alt_props(
+        game_date=game_date,
+        market=market,
+        player=player,
+        min_score=min_score,
+        side=side,
         limit=limit,
     )
 
@@ -570,6 +730,17 @@ def get_credits() -> dict:
 # Ladder Challenge — background state + pipeline
 # ---------------------------------------------------------------------------
 
+_alt_refresh_state: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "status": "idle",   # idle | running | done | no_games | no_props | error
+    "props_graded": 0,
+    "props_total": 0,
+    "error": None,
+}
+_alt_refresh_lock = threading.Lock()
+
 _ladder_state: dict = {
     "running": False,
     "started_at": None,
@@ -581,25 +752,111 @@ _ladder_state: dict = {
 _ladder_lock = threading.Lock()
 
 
-def _run_ladder_background(season: str) -> None:
-    """Fetch alternate props for all tonight's games, grade them, build ~2.0 slips."""
-    global _ladder_state
+def _select_optimal_alt_lines(
+    all_raw_props: list[PlayerProp],
+    season: str,
+) -> list[PlayerProp]:
+    """
+    Smart alt-line selection: for each (player, market), pick the ONE line
+    that is above the player's statistical floor with odds in the per-leg
+    target window (1.15–1.45). Returns ~60-120 props instead of ~3000.
+    """
+    import pandas as pd
 
-    with _ladder_lock:
-        _ladder_state.update(
+    # Group raw props by (player_id, base_market)
+    groups: dict[tuple, list[PlayerProp]] = {}
+    for prop in all_raw_props:
+        base = config.get_base_market(prop.market)
+        key = (prop.nba_player_id, base)
+        groups.setdefault(key, []).append(prop)
+
+    selected: list[PlayerProp] = []
+
+    for (pid, base_market), props in groups.items():
+        if not pid:
+            continue
+        market_cfg = config.MARKET_MAP.get(base_market)
+        if not market_cfg:
+            continue
+
+        # Get cached game log → compute floor (min of last 10 games)
+        df = nba_stats.get_player_game_log(pid, season=season)
+        if df is None or df.empty or len(df) < config.MIN_GAMES_PLAYED:
+            continue
+
+        compute_fn = market_cfg["compute"]
+        stat_col = market_cfg["stat_key"] if callable(compute_fn) else compute_fn
+
+        if stat_col not in df.columns:
+            # For combo stats (PRA, PR, etc.) the column may need to be computed
+            if callable(compute_fn):
+                try:
+                    df[stat_col] = df.apply(compute_fn, axis=1)
+                except Exception:
+                    continue
+            else:
+                continue
+
+        last_10 = df[stat_col].head(10)
+        floor = float(last_10.min())
+        min_line = floor + config.LADDER_FLOOR_BUFFER
+
+        # Filter props to those with OVER odds in per-leg window and line ≥ floor + buffer
+        best_prop: PlayerProp | None = None
+        best_odds: float = 0.0
+
+        for prop in props:
+            if prop.line < min_line:
+                continue
+            over_odds = prop.over_odds_decimal
+            if config.LADDER_LEG_ODDS_MIN <= over_odds <= config.LADDER_LEG_ODDS_MAX:
+                # Pick highest odds (most value) among qualifying lines
+                if over_odds > best_odds:
+                    best_odds = over_odds
+                    best_prop = prop
+
+        if best_prop:
+            selected.append(best_prop)
+
+    return selected
+
+
+def _run_alt_refresh_background(season: str) -> None:
+    """
+    Alt Lines refresh — fetch + grade alt props (separate from ladder building).
+    1. Fetch alt props from Odds API (fast HTTP, no nba_api sleeps)
+    2. For each (player, market), pick the ONE optimal line above their floor
+    3. Grade only those ~60-120 selected props (game logs already cached)
+    4. Persist to DB
+    """
+    global _alt_refresh_state
+
+    with _alt_refresh_lock:
+        _alt_refresh_state.update(
             running=True,
             started_at=datetime.utcnow().isoformat(),
             finished_at=None,
             status="running",
             props_graded=0,
+            props_total=0,
             error=None,
         )
 
     try:
+        if not cache.load_scored_props_raw():
+            with _alt_refresh_lock:
+                _alt_refresh_state.update(
+                    running=False,
+                    finished_at=datetime.utcnow().isoformat(),
+                    status="error",
+                    error="Run the main refresh first so player data is cached.",
+                )
+            return
+
         games = nba_stats.get_todays_games()
         if not games:
-            with _ladder_lock:
-                _ladder_state.update(running=False, finished_at=datetime.utcnow().isoformat(), status="no_games")
+            with _alt_refresh_lock:
+                _alt_refresh_state.update(running=False, finished_at=datetime.utcnow().isoformat(), status="no_games")
             return
 
         injuries = injury_api.get_injury_report()
@@ -609,7 +866,8 @@ def _run_ladder_background(season: str) -> None:
             if event_id:
                 game.odds_event_id = event_id
 
-        all_raw_props: list = []
+        # 1. Fetch all alt props from Odds API
+        all_raw_props: list[PlayerProp] = []
         for game in games:
             if not game.odds_event_id:
                 continue
@@ -624,97 +882,193 @@ def _run_ladder_background(season: str) -> None:
             props = odds_api.build_player_props(raw, game, player_id_map)
             all_raw_props.extend(props)
 
+        # Deduplicate
+        seen_alt: set[tuple] = set()
+        deduped_alt: list = []
+        for p in all_raw_props:
+            k = (p.player_name, p.market, p.line, p.bookmaker)
+            if k not in seen_alt:
+                seen_alt.add(k)
+                deduped_alt.append(p)
+        all_raw_props = deduped_alt
+
         if not all_raw_props:
-            with _ladder_lock:
-                _ladder_state.update(running=False, finished_at=datetime.utcnow().isoformat(), status="no_props")
+            with _alt_refresh_lock:
+                _alt_refresh_state.update(running=False, finished_at=datetime.utcnow().isoformat(), status="no_props")
             return
 
-        # Grade OVER and UNDER for each alternate prop
-        all_valued_props: list[ValuedProp] = []
-        for i, prop in enumerate(all_raw_props):
-            vp_over = prop_grader.grade_prop(prop, injuries, season=season, side="over")
-            if vp_over is not None:
-                all_valued_props.append(vp_over)
-            if prop.under_odds_decimal and prop.under_odds_decimal > 1.0:
-                vp_under = prop_grader.grade_prop(prop, injuries, season=season, side="under")
-                if vp_under is not None:
-                    all_valued_props.append(vp_under)
-            with _ladder_lock:
-                _ladder_state["props_graded"] = i + 1
+        # 2. Smart filter — pick ONE optimal line per (player, market)
+        selected = _select_optimal_alt_lines(all_raw_props, season)
 
-        # Persist alternate graded props to DB
+        if not selected:
+            with _alt_refresh_lock:
+                _alt_refresh_state.update(
+                    running=False,
+                    finished_at=datetime.utcnow().isoformat(),
+                    status="no_props",
+                    error=f"Found {len(all_raw_props)} alt props but none matched floor + odds criteria.",
+                )
+            return
+
+        with _alt_refresh_lock:
+            _alt_refresh_state["props_total"] = len(selected)
+
+        # 3. Grade the selected props
+        all_valued_props: list[ValuedProp] = []
+        for i, prop in enumerate(selected):
+            vp = prop_grader.grade_prop(prop, injuries, season=season, side="over")
+            if vp is not None:
+                all_valued_props.append(vp)
+            with _alt_refresh_lock:
+                _alt_refresh_state["props_graded"] = i + 1
+
+        # 4. Persist to DB
         game_date = games[0].game_date if games else None
         if game_date:
             database.upsert_graded_props(all_valued_props, game_date)
 
-        # Build multi-leg slips targeting ~2.0 (1.95–2.30 window)
+        with _alt_refresh_lock:
+            _alt_refresh_state.update(
+                running=False,
+                finished_at=datetime.utcnow().isoformat(),
+                status="done",
+                props_graded=len(all_valued_props),
+            )
+
+    except Exception as exc:
+        with _alt_refresh_lock:
+            _alt_refresh_state.update(
+                running=False,
+                finished_at=datetime.utcnow().isoformat(),
+                status="error",
+                error=str(exc),
+            )
+
+
+def _factors_from_db_row(r: dict) -> list[FactorResult]:
+    """Reconstruct FactorResult objects from per-factor scores stored in graded_props."""
+    factor_map = [
+        ("Consistency",    "score_consistency",    config.FACTOR_WEIGHTS["consistency"]),
+        ("vs Opponent",    "score_vs_opponent",    config.FACTOR_WEIGHTS["vs_opponent"]),
+        ("Home/Away",      "score_home_away",      config.FACTOR_WEIGHTS["home_away"]),
+        ("Injury Context", "score_injury",         config.FACTOR_WEIGHTS["injury"]),
+        ("Team Context",   "score_team_context",   config.FACTOR_WEIGHTS["team_context"]),
+        ("Season Average", "score_season_avg",     config.FACTOR_WEIGHTS["season_avg"]),
+        ("Blowout Risk",   "score_blowout_risk",   config.FACTOR_WEIGHTS["blowout_risk"]),
+        ("Volume & Usage", "score_volume_context",  config.FACTOR_WEIGHTS["volume_context"]),
+    ]
+    factors = []
+    for name, col, weight in factor_map:
+        val = r.get(col)
+        if val is not None:
+            factors.append(FactorResult(
+                name=name, score=float(val), weight=weight,
+                evidence=[], data={}, confidence=1.0,
+            ))
+    return factors
+
+
+def _run_ladder_build_background(season: str) -> None:
+    """
+    Build ladder slips from already-graded alt props in the database.
+    Does NOT fetch or grade — uses existing data.
+    """
+    global _ladder_state
+
+    with _ladder_lock:
+        _ladder_state.update(
+            running=True,
+            started_at=datetime.utcnow().isoformat(),
+            finished_at=None,
+            status="running",
+            props_graded=0,
+            error=None,
+        )
+
+    try:
+        # Load graded alt props from DB
+        from zoneinfo import ZoneInfo
+        game_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        rows = database.get_prop_results(
+            date_from=game_date, date_to=game_date,
+            alt_filter="alt", graded_only=False,
+        )
+        if not rows:
+            with _ladder_lock:
+                _ladder_state.update(
+                    running=False,
+                    finished_at=datetime.utcnow().isoformat(),
+                    status="no_props",
+                    error="No graded alt props found. Run 'Refresh Alt Lines' first.",
+                )
+            return
+
+        # Reconstruct ValuedProp objects from DB rows for bet_builder
+        all_valued_props: list[ValuedProp] = []
+        for r in rows:
+            try:
+                # Build NBAGame from matchup string (e.g. "BOS @ MIA")
+                matchup = r.get("matchup", "") or ""
+                game = NBAGame(
+                    game_id="", home_team="", away_team="",
+                    home_team_id=0, away_team_id=0,
+                    game_date=r.get("game_date", ""),
+                    game_time_utc="", odds_event_id="",
+                )
+                if " @ " in matchup:
+                    parts = matchup.split(" @ ")
+                    game.away_team = parts[0].strip()
+                    game.home_team = parts[1].strip()
+
+                prop = PlayerProp(
+                    player_name=r["player_name"],
+                    nba_player_id=r["nba_player_id"],
+                    market=r["market"],
+                    line=r["line"],
+                    over_odds_decimal=r.get("decimal_odds", 0) or 0,
+                    under_odds_decimal=0,
+                    bookmaker=r.get("bookmaker", "unknown"),
+                    game=game,
+                    is_alternate=True,
+                )
+                vp = ValuedProp(
+                    prop=prop,
+                    value_score=r["value_score"],
+                    recommendation=r.get("recommendation", ""),
+                    factors=_factors_from_db_row(r),
+                    backing_data={},
+                )
+                all_valued_props.append(vp)
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                continue
+
+        if not all_valued_props:
+            with _ladder_lock:
+                _ladder_state.update(
+                    running=False,
+                    finished_at=datetime.utcnow().isoformat(),
+                    status="no_props",
+                    error="Could not reconstruct alt props from DB.",
+                )
+            return
+
+        # Build slips
         multi_slips = bet_builder.build_slips(
             all_valued_props,
             target_decimal=config.LADDER_ODDS_TARGET,
             tolerance=config.LADDER_ODDS_TOLERANCE,
             min_score=config.MIN_VALUE_SCORE,
+            max_per_player=1,
+            force_leg_counts=config.LADDER_LEG_COUNTS,
         )
 
-        # Build single-leg picks: props whose relevant-side odds are in the ladder window
-        single_leg_slips: list[dict] = []
-        seen_singles: set[tuple] = set()
-        for vp in sorted(all_valued_props, key=lambda v: v.value_score, reverse=True):
-            if vp.value_score < config.MIN_VALUE_SCORE:
-                continue
-            side = vp.backing_data.get("side", "over")
-            odds_val = (
-                vp.prop.under_odds_decimal if side == "under" else vp.prop.over_odds_decimal
-            )
-            if not (config.LADDER_ODDS_MIN <= odds_val <= config.LADDER_ODDS_MAX):
-                continue
-            key = (vp.prop.player_name, vp.prop.market, vp.prop.line, side)
-            if key in seen_singles:
-                continue
-            seen_singles.add(key)
-            g = vp.prop.game
-            market_label = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
-            single_leg_slips.append({
-                "type": "single",
-                "combined_odds": round(odds_val, 3),
-                "target_decimal": config.LADDER_ODDS_TARGET,
-                "target_odds_str": "Even Money (~2.0)",
-                "avg_value_score": round(vp.value_score, 1),
-                "has_correlated_legs": False,
-                "summary": (
-                    f"{vp.prop.player_name} {side.upper()} {vp.prop.line} {market_label} "
-                    f"@{odds_val:.2f}"
-                ),
-                "legs": [
-                    {
-                        "player_name": vp.prop.player_name,
-                        "player_id": vp.prop.nba_player_id,
-                        "market": vp.prop.market,
-                        "market_label": market_label,
-                        "line": vp.prop.line,
-                        "side": side,
-                        "over_odds": odds_val,
-                        "bookmaker": vp.prop.bookmaker,
-                        "is_paddy_power": vp.prop.is_paddy_power,
-                        "value_score": round(vp.value_score, 1),
-                        "recommendation": vp.recommendation,
-                        "game": f"{g.away_team} @ {g.home_team}",
-                        "factors": [
-                            {"name": f.name, "score": round(f.score, 1), "weight": f.weight}
-                            for f in vp.factors
-                        ],
-                    }
-                ],
-            })
-            if len(single_leg_slips) >= 5:
-                break
-
         multi_slip_dicts = [_slip_to_response(s, "Even Money (~2.0)") for s in multi_slips]
-        # Mark multi-leg slips for frontend differentiation
         for d in multi_slip_dicts:
             d["type"] = "multi"
 
-        all_results = single_leg_slips + multi_slip_dicts
-        cache.set("ladder_results", all_results)
+        cache.set("ladder_results", multi_slip_dicts)
 
         with _ladder_lock:
             _ladder_state.update(
@@ -734,21 +1088,44 @@ def _run_ladder_background(season: str) -> None:
             )
 
 
+# --- Alt Lines Refresh endpoints ---
+
+@app.post("/api/alt-refresh")
+def trigger_alt_refresh(season: str = config.DEFAULT_SEASON) -> dict:
+    """Fetch and grade alt lines from the Odds API."""
+    with _alt_refresh_lock:
+        if _alt_refresh_state["running"]:
+            return {"status": "already_running", "state": dict(_alt_refresh_state)}
+
+    t = threading.Thread(target=_run_alt_refresh_background, args=(season,), daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
+@app.get("/api/alt-refresh/status")
+def alt_refresh_status() -> dict:
+    """Current state of the alt lines refresh."""
+    with _alt_refresh_lock:
+        return dict(_alt_refresh_state)
+
+
+# --- Ladder Build endpoints ---
+
 @app.post("/api/ladder")
 def trigger_ladder(season: str = config.DEFAULT_SEASON) -> dict:
-    """Kick off the alternate-props fetch + grade + build in a background thread."""
+    """Build ladder slips from already-graded alt props."""
     with _ladder_lock:
         if _ladder_state["running"]:
             return {"status": "already_running", "state": dict(_ladder_state)}
 
-    t = threading.Thread(target=_run_ladder_background, args=(season,), daemon=True)
+    t = threading.Thread(target=_run_ladder_build_background, args=(season,), daemon=True)
     t.start()
     return {"status": "started"}
 
 
 @app.get("/api/ladder/status")
 def ladder_status() -> dict:
-    """Current state of the ladder background job."""
+    """Current state of the ladder build."""
     with _ladder_lock:
         return dict(_ladder_state)
 

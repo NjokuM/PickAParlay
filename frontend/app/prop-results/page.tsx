@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, PropResult, ResultsStatus } from "@/lib/api";
 import { ScoreBadge, LegResultBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
+import { useSlipBuilder } from "@/lib/slip-builder-context";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -103,6 +104,7 @@ const MARKETS = [
 ];
 
 export default function PropResultsPage() {
+  const { addLeg, isInSlip } = useSlipBuilder();
   const [dateFrom,   setDateFrom]   = useState(nDaysAgo(7));
   const [dateTo,     setDateTo]     = useState(today());
   const [player,     setPlayer]     = useState("");
@@ -113,6 +115,7 @@ export default function PropResultsPage() {
   const [picksOnly,  setPicksOnly]  = useState(true);
   const [activeOnly, setActiveOnly] = useState(true);
   const [gradedOnly, setGradedOnly] = useState(true);
+  const [altFilter,  setAltFilter]  = useState<"regular" | "alt" | "all">("regular");
   const [view,       setView]       = useState<"table" | "players">("table");
   const [rows,       setRows]       = useState<PropResult[]>([]);
   const [loading,    setLoading]    = useState(false);
@@ -173,6 +176,7 @@ export default function PropResultsPage() {
         picks_only:  picksOnly  || undefined,
         active_only: activeOnly || undefined,
         graded_only: gradedOnly,
+        alt_filter:  altFilter,
         limit: 500,
       });
       setRows(data);
@@ -268,6 +272,16 @@ export default function PropResultsPage() {
             {(["", "HIT", "MISS"] as const).map(r => (
               <button key={r} style={pill(result === r)} onClick={() => setResult(r)}>
                 {r || "All"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Type</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {(["regular", "alt", "all"] as const).map(f => (
+              <button key={f} style={pill(altFilter === f)} onClick={() => setAltFilter(f)}>
+                {f === "regular" ? "Regular" : f === "alt" ? "Alt Lines" : "All"}
               </button>
             ))}
           </div>
@@ -398,7 +412,7 @@ export default function PropResultsPage() {
       {view === "table" && rows.length > 0 && (
         <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           {/* Table header */}
-          <div style={{ display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px 52px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
             <span>Date</span>
             <span />
             <span>Player</span>
@@ -409,10 +423,11 @@ export default function PropResultsPage() {
             <span>Result</span>
             <span>Odds</span>
             <span>Matchup</span>
+            <span></span>
           </div>
           {rows.map(r => (
             <div key={r.id} style={{
-              display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px",
+              display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px 52px",
               gap: "0 8px", padding: "7px 12px", borderBottom: "1px solid var(--border)", fontSize: 13,
               alignItems: "center", opacity: r.is_active === 0 ? 0.45 : 1,
             }}>
@@ -421,6 +436,7 @@ export default function PropResultsPage() {
               <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
                 {r.player_name}
                 {r.is_best_side === 1 && <span style={{ fontSize: 9, background: "var(--accent)", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>PICK</span>}
+                {r.is_alternate === 1 && <span style={{ fontSize: 9, background: "#f0883e", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>ALT</span>}
               </span>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{r.market_label}</span>
               <span style={{ fontSize: 11, color: r.side === "under" ? "var(--orange)" : "var(--accent)" }}>
@@ -437,6 +453,31 @@ export default function PropResultsPage() {
               <span style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {r.matchup ?? (r.is_paddy_power ? "🍀 PP" : bookmakerLabel(r.bookmaker))}
               </span>
+              <button
+                onClick={() => addLeg({
+                  propId: r.id,
+                  playerName: r.player_name,
+                  playerId: r.nba_player_id,
+                  market: r.market,
+                  marketLabel: r.market_label,
+                  line: r.line,
+                  side: r.side ?? "over",
+                  decimalOdds: r.decimal_odds ?? 0,
+                  valueScore: r.value_score,
+                  bookmaker: r.bookmaker,
+                  matchup: r.matchup,
+                })}
+                disabled={isInSlip(r.id)}
+                style={{
+                  padding: "3px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                  border: isInSlip(r.id) ? "1px solid var(--green)" : "1px solid var(--accent)",
+                  background: "transparent",
+                  color: isInSlip(r.id) ? "var(--green)" : "var(--accent)",
+                  cursor: isInSlip(r.id) ? "default" : "pointer",
+                }}
+              >
+                {isInSlip(r.id) ? "In Slip" : "+ Add"}
+              </button>
             </div>
           ))}
         </div>

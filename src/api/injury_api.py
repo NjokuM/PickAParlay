@@ -15,6 +15,17 @@ from src.models import InjuryReport
 
 _CACHE_KEY = "espn_injuries"
 
+# ESPN uses different abbreviations than nba_api for some teams.
+# Normalise ESPN → nba_api standard abbreviations.
+_ESPN_ABBR_FIX: dict[str, str] = {
+    "GS":   "GSW",
+    "NO":   "NOP",
+    "NY":   "NYK",
+    "SA":   "SAS",
+    "UTAH": "UTA",
+    "WSH":  "WAS",
+}
+
 # ESPN status strings → normalised internal status
 _STATUS_MAP = {
     "out":          "out",
@@ -42,11 +53,25 @@ def get_injury_report() -> list[InjuryReport]:
 
     reports: list[InjuryReport] = []
     for team_entry in data.get("injuries", []):
-        team_name = team_entry.get("team", {}).get("abbreviation", "UNK")
+        # ESPN API has two possible locations for team abbreviation:
+        #   1. team_entry["team"]["abbreviation"]  (old format, now often empty {})
+        #   2. player_entry["athlete"]["team"]["abbreviation"]  (current format)
+        # We try the team-level first, then fall back to athlete-level per player.
+        team_level_abbr = team_entry.get("team", {}).get("abbreviation", "")
         for player_entry in team_entry.get("injuries", []):
-            player_name = (
-                player_entry.get("athlete", {}).get("displayName", "")
+            athlete = player_entry.get("athlete", {})
+            player_name = athlete.get("displayName", "")
+
+            # Get team abbreviation: prefer athlete-level (more reliable),
+            # fall back to team-level, then "UNK"
+            raw_team = (
+                athlete.get("team", {}).get("abbreviation")
+                or team_level_abbr
+                or "UNK"
             )
+            # Normalise ESPN abbreviations to nba_api standard
+            team_name = _ESPN_ABBR_FIX.get(raw_team, raw_team)
+
             raw_status = (
                 player_entry.get("status", "").lower().strip()
             )

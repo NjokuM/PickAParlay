@@ -19,6 +19,8 @@ def build_slips(
     min_score: float | None = None,
     bookmaker: str | None = None,
     tolerance: float | None = None,
+    max_per_player: int | None = None,
+    force_leg_counts: list[int] | None = None,
 ) -> list[BetSlip]:
     """
     Main entry point.
@@ -31,6 +33,10 @@ def build_slips(
                "paddypower" matches is_paddy_power=True; any other string matches
                prop.bookmaker exactly. None = no filter.
     tolerance: if set, overrides config.ODDS_TOLERANCE for the proximity filter.
+    max_per_player: if set, caps how many legs one player can have in a slip
+                    (default None = use built-in limit of 2).
+    force_leg_counts: if set, bypasses _estimate_leg_counts and uses these exact
+                      leg counts (e.g. [3, 4] for ladder).
     Returns top MAX_SLIPS_RETURNED slips sorted by slip_score descending.
     """
     # --- Bookmaker filter ---
@@ -50,34 +56,44 @@ def build_slips(
     if not eligible:
         return []
 
-    if n_legs is not None:
+    if force_leg_counts is not None:
+        leg_counts = force_leg_counts
+    elif n_legs is not None:
         leg_counts = [n_legs]
     elif target_decimal is not None:
         leg_counts = _estimate_leg_counts(eligible, target_decimal)
     else:
-        leg_counts = [2, 3, 4]   # best-value mode: try all common sizes
+        leg_counts = [3, 4, 5]   # best-value mode: one of each size for variety
+
+    player_limit = max_per_player if max_per_player is not None else 2
 
     all_slips: list[BetSlip] = []
 
     for n in leg_counts:
         if n < config.MIN_LEGS or n > config.MAX_LEGS:
             continue
-        slips = _search_combinations(eligible, target_decimal, n, tolerance=tolerance)
+        slips = _search_combinations(
+            eligible, target_decimal, n,
+            tolerance=tolerance, player_limit=player_limit,
+        )
         all_slips.extend(slips)
 
     # Deduplicate by frozenset of (player, market, side) tuples
-    seen: set[frozenset] = set()
+    seen_keys: set[frozenset] = set()
     unique_slips: list[BetSlip] = []
     for slip in sorted(all_slips, key=lambda s: s.total_value_score, reverse=True):
         key = frozenset(
             (leg.valued_prop.prop.player_name, leg.valued_prop.prop.market, leg.side)
             for leg in slip.legs
         )
-        if key not in seen:
-            seen.add(key)
+        if key not in seen_keys:
+            seen_keys.add(key)
             unique_slips.append(slip)
 
-    return unique_slips[: config.MAX_SLIPS_RETURNED]
+    # --- Diversity-aware selection ---
+    # Guarantee at least one slip per leg count, then fill remaining slots
+    # with an overlap penalty so returned slips don't share most of the same picks.
+    return _diverse_select(unique_slips, leg_counts, config.MAX_SLIPS_RETURNED)
 
 
 def _prop_decimal_odds(vp: ValuedProp) -> float:
@@ -86,6 +102,73 @@ def _prop_decimal_odds(vp: ValuedProp) -> float:
     if side == "under" and vp.prop.under_odds_decimal and vp.prop.under_odds_decimal > 1.0:
         return vp.prop.under_odds_decimal
     return vp.prop.over_odds_decimal
+
+
+def _slip_player_set(slip: BetSlip) -> set[str]:
+    """Return the set of player names in a slip (for overlap checks)."""
+    return {leg.valued_prop.prop.player_name for leg in slip.legs}
+
+
+def _diverse_select(
+    slips: list[BetSlip],
+    leg_counts: list[int],
+    max_return: int,
+) -> list[BetSlip]:
+    """
+    Pick slips that maximise diversity across leg counts and minimise player overlap.
+
+    1. First pass — take the best slip from each requested leg count (guarantees variety).
+    2. Second pass — fill remaining slots, but skip any candidate that shares > 50%
+       of its players with an already-selected slip.
+    """
+    if not slips:
+        return []
+
+    selected: list[BetSlip] = []
+    used_indices: set[int] = set()
+
+    # --- Pass 1: best slip per leg count ---
+    for n in sorted(leg_counts):
+        for i, slip in enumerate(slips):
+            if i in used_indices:
+                continue
+            if len(slip.legs) == n:
+                selected.append(slip)
+                used_indices.add(i)
+                break
+
+    # --- Pass 2: fill remaining slots with overlap filtering ---
+    for i, slip in enumerate(slips):
+        if len(selected) >= max_return:
+            break
+        if i in used_indices:
+            continue
+
+        candidate_players = _slip_player_set(slip)
+        too_similar = False
+        for existing in selected:
+            existing_players = _slip_player_set(existing)
+            overlap = len(candidate_players & existing_players)
+            # If more than half of the smaller slip's players are shared, skip
+            min_size = min(len(candidate_players), len(existing_players))
+            if min_size > 0 and overlap / min_size > 0.5:
+                too_similar = True
+                break
+
+        if not too_similar:
+            selected.append(slip)
+            used_indices.add(i)
+
+    # If we still haven't filled slots (overlap filter was too aggressive), relax
+    if len(selected) < max_return:
+        for i, slip in enumerate(slips):
+            if len(selected) >= max_return:
+                break
+            if i not in used_indices:
+                selected.append(slip)
+                used_indices.add(i)
+
+    return selected[:max_return]
 
 
 def _estimate_leg_counts(eligible: list[ValuedProp], target_decimal: float) -> list[int]:
@@ -141,13 +224,14 @@ def _search_combinations(
     target_decimal: float | None,
     n: int,
     tolerance: float | None = None,
+    player_limit: int = 2,
 ) -> list[BetSlip]:
     """Generate all N-leg combinations and score them."""
     tol = tolerance if tolerance is not None else config.ODDS_TOLERANCE
     results: list[tuple[float, BetSlip]] = []
 
     for combo in combinations(eligible, n):
-        # Constraint: max 2 props per player (but not OVER+UNDER same market)
+        # Constraint: max player_limit props per player (but not OVER+UNDER same market)
         player_counts: dict[str, int] = {}
         player_market_sides: dict[tuple, set] = {}
         skip = False
@@ -161,7 +245,7 @@ def _search_combinations(
             if len(sides) > 1:  # both over and under on same market for same player
                 skip = True
                 break
-        if skip or any(c > 2 for c in player_counts.values()):
+        if skip or any(c > player_limit for c in player_counts.values()):
             continue
 
         # Constraint: no combo market + component market for the same player
@@ -244,7 +328,7 @@ def _build_summary(legs: list[BetLeg], combined_odds: float) -> str:
     parts = []
     for leg in legs:
         vp = leg.valued_prop
-        market_label = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
+        market_label = config.get_market_label(vp.prop.market)
         bookie = "[PP]" if vp.prop.is_paddy_power else f"[{vp.prop.bookmaker}]"
         direction = leg.side.upper()  # "OVER" or "UNDER"
         parts.append(

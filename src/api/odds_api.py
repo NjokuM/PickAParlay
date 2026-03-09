@@ -134,36 +134,115 @@ def get_events() -> list[dict]:
     return data
 
 
+def _build_abbr_lookup() -> dict[str, str]:
+    """
+    Build a lookup that maps various team name forms to 3-letter abbreviations.
+    Handles: full name, city, nickname, common variations.
+    Keys are lowercase. Values are uppercase abbreviations.
+    """
+    from nba_api.stats.static import teams as nba_teams_static
+
+    lookup: dict[str, str] = {}
+    for t in nba_teams_static.get_teams():
+        abbr = t["abbreviation"].upper()
+        # Direct abbreviation
+        lookup[abbr.lower()] = abbr
+        # Full name: "New York Knicks"
+        lookup[t["full_name"].lower()] = abbr
+        # Nickname: "Knicks"
+        lookup[t["nickname"].lower()] = abbr
+        # City: "New York"
+        lookup[t["city"].lower()] = abbr
+
+    # Common variations the Odds API might use
+    lookup["la clippers"] = "LAC"
+    lookup["la lakers"] = "LAL"
+    lookup["los angeles clippers"] = "LAC"
+    lookup["los angeles lakers"] = "LAL"
+    return lookup
+
+
+# Module-level cache — built once on first use
+_ABBR_LOOKUP: dict[str, str] | None = None
+
+
+def _normalise_team(name: str) -> str:
+    """
+    Convert any team name format to a 3-letter abbreviation.
+    Handles: "New York Knicks", "Knicks", "NYK", "New York" → "NYK"
+    Returns the input lowercased if no match found.
+    """
+    global _ABBR_LOOKUP
+    if _ABBR_LOOKUP is None:
+        _ABBR_LOOKUP = _build_abbr_lookup()
+
+    key = name.strip().lower()
+    if key in _ABBR_LOOKUP:
+        return _ABBR_LOOKUP[key]
+
+    # Partial match — check if any known name is contained in the input
+    for known, abbr in _ABBR_LOOKUP.items():
+        if len(known) > 3 and known in key:
+            return abbr
+
+    return key  # fallback: return as-is
+
+
 def match_game_to_event(game: NBAGame, events: list[dict]) -> str | None:
     """
-    Match an NBAGame to an Odds API event ID by team name fuzzy matching.
+    Match an NBAGame (with 3-letter team abbreviations) to an Odds API event
+    (with full team names like "New York Knicks").
+
+    Strategy:
+      1. Normalise both sides to 3-letter abbreviations, then exact match.
+      2. Fuzzy fallback using normalised names (lower threshold).
+
     Returns the event_id string or None.
     """
-    from thefuzz import process
-
     if not events:
         return None
 
-    home = game.home_team.lower()
-    away = game.away_team.lower()
+    home_abbr = _normalise_team(game.home_team)
+    away_abbr = _normalise_team(game.away_team)
 
+    # --- Pass 1: Exact abbreviation match ---
+    for event in events:
+        ev_home = _normalise_team(event.get("home_team", ""))
+        ev_away = _normalise_team(event.get("away_team", ""))
+        if ev_home == home_abbr and ev_away == away_abbr:
+            return event["id"]
+
+    # --- Pass 2: Relaxed — match ignoring home/away swap (rare but possible) ---
+    for event in events:
+        ev_home = _normalise_team(event.get("home_team", ""))
+        ev_away = _normalise_team(event.get("away_team", ""))
+        if {ev_home, ev_away} == {home_abbr, away_abbr}:
+            return event["id"]
+
+    # --- Pass 3: Fuzzy fallback (substring + thefuzz) ---
+    from thefuzz import process
+
+    home_lower = game.home_team.lower()
+    away_lower = game.away_team.lower()
+
+    # Direct substring check (handles cases like abbreviation in full name)
     for event in events:
         home_team = event.get("home_team", "").lower()
         away_team = event.get("away_team", "").lower()
-        if (home in home_team or home_team in home) and (
-            away in away_team or away_team in away
+        if (home_lower in home_team or home_team in home_lower) and (
+            away_lower in away_team or away_team in away_lower
         ):
             return event["id"]
 
-    # Fuzzy fallback
+    # Fuzzy matching as last resort
     all_matchups = [
-        f"{e.get('away_team','')} @ {e.get('home_team','')}"
+        f"{e.get('away_team', '')} @ {e.get('home_team', '')}"
         for e in events
     ]
     target = f"{game.away_team} @ {game.home_team}"
     if all_matchups:
         match, score = process.extractOne(target, all_matchups)
-        if score >= 70:
+        if score >= 60:  # lowered from 70 — abbreviations are short strings
             idx = all_matchups.index(match)
             return events[idx]["id"]
     return None

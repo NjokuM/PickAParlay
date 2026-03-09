@@ -208,7 +208,7 @@ ESPN_INJURY_URL: str = (
     "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
 )
 
-NBA_API_SLEEP: float = 0.6         # seconds between nba_api calls
+NBA_API_SLEEP: float = 0.3         # seconds between nba_api calls (was 0.6; NBA limit ~100 req/min)
 
 # ---------------------------------------------------------------------------
 # Cache TTLs (seconds)
@@ -241,20 +241,50 @@ ROLE_CHANGE_THRESHOLD: float = 0.15  # if rolling-20 avg differs from full seaso
 
 # ---------------------------------------------------------------------------
 # Alternate market keys (for Ladder Challenge)
+# All 11 alternate markets available from The Odds API
 # ---------------------------------------------------------------------------
 ALTERNATE_MARKET_MAP: list[str] = [
     "player_points_alternate",
     "player_assists_alternate",
     "player_rebounds_alternate",
     "player_threes_alternate",
+    "player_blocks_alternate",
+    "player_steals_alternate",
+    "player_turnovers_alternate",
+    "player_points_rebounds_assists_alternate",
+    "player_points_rebounds_alternate",
+    "player_points_assists_alternate",
+    "player_rebounds_assists_alternate",
 ]
 
-# Ladder Challenge target odds window (decimal)
+# Ladder Challenge — combined parlay odds window (decimal)
 LADDER_ODDS_MIN: float = 1.95
 LADDER_ODDS_MAX: float = 2.30
 LADDER_ODDS_TARGET: float = 2.125       # midpoint used for build_slips
-LADDER_ODDS_TOLERANCE: float = 0.085   # ±8.5% around 2.125 captures 1.95–2.30
+LADDER_ODDS_TOLERANCE: float = 0.15    # ±15% around 2.125 → wider search for 3-4 leg combos
+
+# Ladder Challenge — per-leg odds window (≈ 1/7 to 2/5 fractional)
+LADDER_LEG_ODDS_MIN: float = 1.15
+LADDER_LEG_ODDS_MAX: float = 1.45
+LADDER_LEG_COUNTS: list[int] = [3, 4]   # only build 3 or 4 leg slips
+LADDER_FLOOR_BUFFER: float = 1.5        # alt line must be ≥ floor + this buffer
 
 # Useful odds range for alternate prop filtering (exclude junk lines)
 ALTERNATE_ODDS_MIN: float = 1.10
 ALTERNATE_ODDS_MAX: float = 2.60
+
+
+# ---------------------------------------------------------------------------
+# Market-key helpers — normalise _alternate suffix for MARKET_MAP lookups
+# ---------------------------------------------------------------------------
+
+def get_base_market(market: str) -> str:
+    """Strip _alternate suffix to get the base market key for MARKET_MAP lookups."""
+    return market.replace("_alternate", "")
+
+
+def get_market_label(market: str) -> str:
+    """Get human-readable label for a market key, handling _alternate suffix."""
+    base = get_base_market(market)
+    cfg = MARKET_MAP.get(base)
+    return cfg["label"] if cfg else market

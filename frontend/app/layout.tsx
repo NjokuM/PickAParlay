@@ -5,6 +5,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api, Credits } from "@/lib/api";
+import { SlipBuilderProvider } from "@/lib/slip-builder-context";
+import SlipBuilderPanel from "@/components/SlipBuilderPanel";
 
 const NAV = [
   { href: "/",          label: "Tonight",   icon: "🏀" },
@@ -115,9 +117,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </aside>
 
           {/* ── Main ── */}
-          <main style={{ flex: 1, overflow: "auto", padding: "24px 28px" }}>
-            {children}
-          </main>
+          <SlipBuilderProvider>
+            <main style={{ flex: 1, overflow: "auto", padding: "24px 28px" }}>
+              {children}
+            </main>
+            <SlipBuilderPanel />
+          </SlipBuilderProvider>
         </div>
       </body>
     </html>

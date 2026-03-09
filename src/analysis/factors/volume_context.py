@@ -40,12 +40,15 @@ def compute(
     line: float,
     market: str,
     side: str = "over",
+    teammate_minutes_lost: float = 0.0,
 ) -> FactorResult:
     """
     df: full current-season game log (raw, not context-filtered).
     stat_col: stat column name (e.g. "PTS", "AST", "FG3M").
     line: the prop line.
     market: market key (e.g. "player_points").
+    teammate_minutes_lost: cumulative MPG of injured teammates (from injury_context).
+                           When > 0, boosts expected minutes for this player.
     """
     weight = config.FACTOR_WEIGHTS["volume_context"]
 
@@ -80,6 +83,20 @@ def compute(
     evidence.append(
         f"Recent MPG: {recent_mpg:.1f} (season avg: {season_mpg:.1f}){mpg_trend}"
     )
+
+    # ── Injury-driven minutes boost ────────────────────────────────────────
+    # When teammates are out, remaining players absorb extra minutes/touches.
+    # Rough model: player absorbs ~15-20% of lost minutes (8-9 players split the load).
+    injury_minutes_boost = 0.0
+    if teammate_minutes_lost > 0:
+        estimated_extra_mpg = teammate_minutes_lost * 0.17
+        # Each extra MPG adds ~3 points to the MPG score
+        injury_minutes_boost = min(25.0, estimated_extra_mpg * 3.0)
+        mpg_score = min(100.0, mpg_score + injury_minutes_boost)
+        evidence.append(
+            f"⚠️ Teammates out (~{teammate_minutes_lost:.0f} min lost) → "
+            f"expected +{estimated_extra_mpg:.1f} MPG boost"
+        )
 
     # ── Component B: Usage / attempt rate (60% of factor) ───────────────────
     usage_score: float = mpg_score  # default: MPG-based for markets without specific metric
@@ -135,6 +152,8 @@ def compute(
             "season_mpg": season_mpg,
             "mpg_score": round(mpg_score, 1),
             "usage_score": round(usage_score, 1),
+            "injury_minutes_boost": round(injury_minutes_boost, 1),
+            "teammate_minutes_lost": round(teammate_minutes_lost, 1),
             "side": side,
         },
         confidence=confidence,

@@ -5,6 +5,7 @@ import { api, Prop, Game, RefreshStatus } from "@/lib/api";
 import { FactorGrid } from "@/components/FactorBar";
 import { ScoreBadge, RecoBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
+import { useSlipBuilder } from "@/lib/slip-builder-context";
 
 const MARKETS = [
   "All Markets", "Points", "Assists", "Rebounds", "Pts+Reb+Ast",
@@ -24,6 +25,7 @@ interface Filters {
 }
 
 export default function DashboardPage() {
+  const { addLeg, isInSlip } = useSlipBuilder();
   const [props, setProps]           = useState<Prop[]>([]);
   const [games, setGames]           = useState<Game[]>([]);
   const [bookmakers, setBookmakers] = useState<string[]>([]);
@@ -74,6 +76,7 @@ export default function DashboardPage() {
     setRefreshStatus(await api.refreshStatus());
   }
 
+
   const setFilter = <K extends keyof Filters>(k: K, v: Filters[K]) =>
     setFilters(f => ({ ...f, [k]: v }));
 
@@ -114,7 +117,8 @@ export default function DashboardPage() {
         <div><div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Game</div>
           <select style={{ ...S, minWidth: 140 }} value={filters.game} onChange={e => setFilter("game", e.target.value)}>
             <option value="">All Games</option>
-            {games.map(g => <option key={g.game_id} value={g.matchup}>{g.matchup}</option>)}
+            {games.filter((g, i, arr) => arr.findIndex(x => x.game_id === g.game_id) === i)
+              .map(g => <option key={g.game_id} value={g.matchup}>{g.matchup}</option>)}
           </select></div>
 
         <div><div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Sportsbook</div>
@@ -170,16 +174,17 @@ export default function DashboardPage() {
       ) : (
         <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           {/* Header row */}
-          <div style={{ display: "grid", gridTemplateColumns: "48px 52px 1fr 130px 80px 56px 72px 110px 20px", gap: "0 10px", padding: "8px 16px", background: "var(--surface2)", fontSize: 11, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid var(--border)" }}>
-            <span>Score</span><span /><span>Player</span><span>Market</span><span>Line</span><span>Odds</span><span>Book</span><span>Game</span><span />
+          <div style={{ display: "grid", gridTemplateColumns: "48px 52px 1fr 130px 80px 56px 72px 110px 52px 20px", gap: "0 10px", padding: "8px 16px", background: "var(--surface2)", fontSize: 11, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid var(--border)" }}>
+            <span>Score</span><span /><span>Player</span><span>Market</span><span>Line</span><span>Odds</span><span>Book</span><span>Game</span><span /><span />
           </div>
 
-          {sorted.map((p) => {
-            const key = `${p.player_id}-${p.market}-${p.side ?? "over"}`;
-            const isX = expanded === key;
+          {sorted.map((p, idx) => {
+            const key = `${p.player_id}-${p.market}-${p.line}-${p.side ?? "over"}-${p.bookmaker}-${idx}`;
+            const expandKey = `${p.player_id}-${p.market}-${p.line}-${p.side ?? "over"}`;
+            const isX = expanded === expandKey;
             return (
               <div key={key}>
-                <div onClick={() => setExpanded(isX ? null : key)} style={{ display: "grid", gridTemplateColumns: "48px 52px 1fr 130px 80px 56px 72px 110px 20px", gap: "0 10px", padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: isX ? "var(--surface2)" : "transparent", alignItems: "center" }}>
+                <div onClick={() => setExpanded(isX ? null : expandKey)} style={{ display: "grid", gridTemplateColumns: "48px 52px 1fr 130px 80px 56px 72px 110px 52px 20px", gap: "0 10px", padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: isX ? "var(--surface2)" : "transparent", alignItems: "center" }}>
                   <ScoreBadge score={p.value_score} />
                   <PlayerHeadshot playerId={p.player_id} size={40} />
                   <div>
@@ -197,6 +202,36 @@ export default function DashboardPage() {
                   <div style={{ fontSize: 13, color: "var(--accent)" }}>{p.over_odds.toFixed(2)}</div>
                   <div style={{ fontSize: 12, color: "var(--muted)" }}>{p.is_paddy_power ? "🍀 PP" : p.bookmaker}</div>
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>{p.game}</div>
+                  {p.prop_id ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        addLeg({
+                          propId: p.prop_id!,
+                          playerName: p.player_name,
+                          playerId: p.player_id,
+                          market: p.market,
+                          marketLabel: p.market_label,
+                          line: p.line,
+                          side: p.side ?? "over",
+                          decimalOdds: p.over_odds,
+                          valueScore: p.value_score,
+                          bookmaker: p.bookmaker,
+                          matchup: p.game,
+                        });
+                      }}
+                      disabled={isInSlip(p.prop_id!)}
+                      style={{
+                        padding: "3px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                        border: isInSlip(p.prop_id!) ? "1px solid var(--green)" : "1px solid var(--accent)",
+                        background: "transparent",
+                        color: isInSlip(p.prop_id!) ? "var(--green)" : "var(--accent)",
+                        cursor: isInSlip(p.prop_id!) ? "default" : "pointer",
+                      }}
+                    >
+                      {isInSlip(p.prop_id!) ? "In Slip" : "+ Add"}
+                    </button>
+                  ) : <span />}
                   <div style={{ color: "var(--muted)" }}>{isX ? "▲" : "▼"}</div>
                 </div>
 

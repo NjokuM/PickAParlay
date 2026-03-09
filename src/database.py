@@ -206,6 +206,46 @@ def get_latest_run_id() -> int | None:
 
 
 # ---------------------------------------------------------------------------
+# Lookup graded props by ID (used by custom slip builder)
+# ---------------------------------------------------------------------------
+
+def get_graded_props_by_ids(ids: list[int]) -> list[dict]:
+    """Return graded_props rows for specific IDs."""
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""SELECT id, player_name, nba_player_id, market, market_label,
+                       line, side, game_date,
+                       over_odds, under_odds, decimal_odds,
+                       bookmaker, is_paddy_power, is_alternate,
+                       value_score, recommendation,
+                       matchup, graded_at,
+                       score_consistency, score_vs_opponent, score_home_away,
+                       score_injury, score_team_context, score_season_avg,
+                       score_blowout_risk, score_volume_context
+                FROM graded_props
+                WHERE id IN ({placeholders})""",
+            ids,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_graded_prop_id(
+    player_name: str, market: str, line: float, side: str, game_date: str,
+) -> int | None:
+    """Look up the graded_props ID for a specific prop by its unique key."""
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT id FROM graded_props
+               WHERE player_name = ? AND market = ? AND line = ? AND side = ? AND game_date = ?""",
+            (player_name, market, line, side, game_date),
+        ).fetchone()
+        return row["id"] if row else None
+
+
+# ---------------------------------------------------------------------------
 # Saving slips
 # ---------------------------------------------------------------------------
 
@@ -242,7 +282,7 @@ def save_slip(
             vp = leg.valued_prop
             # Extract factor scores by factor name
             factor_scores: dict[str, float | None] = {f.name: f.score for f in vp.factors}
-            market_label = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
+            market_label = config.get_market_label(vp.prop.market)
 
             conn.execute(
                 """INSERT INTO slip_legs
@@ -351,89 +391,109 @@ def record_leg_result(leg_id: int, result: str) -> None:
 # Analytics
 # ---------------------------------------------------------------------------
 
-def get_analytics() -> dict:
-    """
-    Return accuracy analytics from graded_props (picks = is_best_side=1).
-    Includes: overall hit rate, value-score calibration, per-factor calibration,
-    hit rate by market, hit rate by side, and daily trend.
-    Falls back to slip-level P&L stats from saved_slips.
-    """
-    with _connect() as conn:
-        # ── Picks-only base filter ──────────────────────────────────────
-        BASE = "FROM graded_props WHERE leg_result IS NOT NULL AND is_best_side = 1"
+def _compute_pick_analytics(conn, is_alternate: int) -> dict:
+    """Run all pick-level analytics queries scoped to regular (0) or alt (1) props."""
+    BASE = (
+        f"FROM graded_props WHERE leg_result IS NOT NULL"
+        f" AND is_best_side = 1 AND is_alternate = {is_alternate}"
+    )
 
-        # Overall pick accuracy
-        total_picks = conn.execute(f"SELECT COUNT(*) {BASE}").fetchone()[0]
-        total_hits  = conn.execute(
-            f"SELECT COUNT(*) {BASE} AND leg_result = 'HIT'"
-        ).fetchone()[0]
-        total_miss  = total_picks - total_hits
+    total_picks = conn.execute(f"SELECT COUNT(*) {BASE}").fetchone()[0]
+    total_hits  = conn.execute(
+        f"SELECT COUNT(*) {BASE} AND leg_result = 'HIT'"
+    ).fetchone()[0]
+    total_miss  = total_picks - total_hits
 
-        # ── Value-score calibration (5-point buckets) ───────────────────
-        value_cal = conn.execute(
+    # ── Value-score calibration (5-point buckets) ─────────────────
+    value_cal = conn.execute(
+        f"""SELECT
+               CAST(value_score / 5 AS INTEGER) * 5 AS bucket,
+               COUNT(*) AS total,
+               SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+           {BASE} AND value_score IS NOT NULL
+           GROUP BY bucket
+           ORDER BY bucket"""
+    ).fetchall()
+
+    # ── Per-factor calibration (10-point buckets) ─────────────────
+    factor_cols = [
+        ("score_consistency",    "Consistency"),
+        ("score_vs_opponent",    "vs Opponent"),
+        ("score_home_away",      "Home/Away"),
+        ("score_injury",         "Injury"),
+        ("score_team_context",   "Team Context"),
+        ("score_season_avg",     "Season Avg"),
+        ("score_blowout_risk",   "Blowout Risk"),
+        ("score_volume_context", "Volume & Usage"),
+    ]
+    factor_calibration: dict[str, list[dict]] = {}
+    for col, label in factor_cols:
+        rows = conn.execute(
             f"""SELECT
-                   CAST(value_score / 5 AS INTEGER) * 5 AS bucket,
+                   CAST({col} / 10 AS INTEGER) * 10 AS bucket,
                    COUNT(*) AS total,
                    SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
-               {BASE} AND value_score IS NOT NULL
+               {BASE} AND {col} IS NOT NULL
                GROUP BY bucket
                ORDER BY bucket"""
         ).fetchall()
+        factor_calibration[label] = [dict(r) for r in rows]
 
-        # ── Per-factor calibration (10-point buckets) ───────────────────
-        factor_cols = [
-            ("score_consistency",    "Consistency"),
-            ("score_vs_opponent",    "vs Opponent"),
-            ("score_home_away",      "Home/Away"),
-            ("score_injury",         "Injury"),
-            ("score_team_context",   "Team Context"),
-            ("score_season_avg",     "Season Avg"),
-            ("score_blowout_risk",   "Blowout Risk"),
-            ("score_volume_context", "Volume & Usage"),
-        ]
-        factor_calibration: dict[str, list[dict]] = {}
-        for col, label in factor_cols:
-            rows = conn.execute(
-                f"""SELECT
-                       CAST({col} / 10 AS INTEGER) * 10 AS bucket,
-                       COUNT(*) AS total,
-                       SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
-                   {BASE} AND {col} IS NOT NULL
-                   GROUP BY bucket
-                   ORDER BY bucket"""
-            ).fetchall()
-            factor_calibration[label] = [dict(r) for r in rows]
+    # ── Hit rate by market ────────────────────────────────────────
+    by_market = conn.execute(
+        f"""SELECT market_label,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+           {BASE}
+           GROUP BY market_label
+           ORDER BY hits * 1.0 / COUNT(*) DESC"""
+    ).fetchall()
 
-        # ── Hit rate by market ──────────────────────────────────────────
-        by_market = conn.execute(
-            f"""SELECT market_label,
-                       COUNT(*) AS total,
-                       SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
-               {BASE}
-               GROUP BY market_label
-               ORDER BY hits * 1.0 / COUNT(*) DESC"""
-        ).fetchall()
+    # ── Hit rate by side ──────────────────────────────────────────
+    by_side = conn.execute(
+        f"""SELECT side,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+           {BASE}
+           GROUP BY side"""
+    ).fetchall()
 
-        # ── Hit rate by side (OVER vs UNDER) ────────────────────────────
-        by_side = conn.execute(
-            f"""SELECT side,
-                       COUNT(*) AS total,
-                       SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
-               {BASE}
-               GROUP BY side"""
-        ).fetchall()
+    # ── Daily trend ───────────────────────────────────────────────
+    daily_trend = conn.execute(
+        f"""SELECT game_date,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+           {BASE}
+           GROUP BY game_date
+           ORDER BY game_date"""
+    ).fetchall()
 
-        # ── Daily trend ─────────────────────────────────────────────────
-        daily_trend = conn.execute(
-            f"""SELECT game_date,
-                       COUNT(*) AS total,
-                       SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
-               {BASE}
-               GROUP BY game_date
-               ORDER BY game_date"""
-        ).fetchall()
+    return {
+        "picks": {
+            "total": total_picks,
+            "hits": total_hits,
+            "misses": total_miss,
+            "hit_rate": round(total_hits / total_picks, 3) if total_picks else 0,
+        },
+        "value_calibration": [dict(r) for r in value_cal],
+        "factor_calibration": factor_calibration,
+        "by_market": [dict(r) for r in by_market],
+        "by_side": [dict(r) for r in by_side],
+        "daily_trend": [dict(r) for r in daily_trend],
+    }
 
-        # ── Slip-level stats (kept for P&L tracking) ───────────────────
+
+def get_analytics() -> dict:
+    """
+    Return accuracy analytics split by regular vs alt props.
+    Top-level keys 'regular' and 'alt' contain full analytics for each type.
+    Backward-compat keys (picks, value_calibration, etc.) point to regular data.
+    """
+    with _connect() as conn:
+        regular = _compute_pick_analytics(conn, is_alternate=0)
+        alt     = _compute_pick_analytics(conn, is_alternate=1)
+
+        # ── Slip-level stats (not split — slips can mix types) ────────
         total_slips = conn.execute(
             "SELECT COUNT(*) FROM saved_slips WHERE outcome IS NOT NULL"
         ).fetchone()[0]
@@ -446,23 +506,23 @@ def get_analytics() -> dict:
         total_pnl = pnl_row[0] or 0.0
 
         return {
-            "picks": {
-                "total": total_picks,
-                "hits": total_hits,
-                "misses": total_miss,
-                "hit_rate": round(total_hits / total_picks, 3) if total_picks else 0,
-            },
+            # ── New separated sections ────────────────────────────────
+            "regular": regular,
+            "alt":     alt,
+            # ── Backward-compatible keys (point to regular data) ──────
+            "picks":              regular["picks"],
+            "value_calibration":  regular["value_calibration"],
+            "factor_calibration": regular["factor_calibration"],
+            "by_market":          regular["by_market"],
+            "by_side":            regular["by_side"],
+            "daily_trend":        regular["daily_trend"],
+            # ── Slip stats (unchanged) ────────────────────────────────
             "slips": {
                 "total_slips": total_slips,
                 "wins": wins,
                 "win_rate": round(wins / total_slips, 3) if total_slips else 0,
                 "total_pnl": round(total_pnl, 2),
             },
-            "value_calibration": [dict(r) for r in value_cal],
-            "factor_calibration": factor_calibration,
-            "by_market": [dict(r) for r in by_market],
-            "by_side": [dict(r) for r in by_side],
-            "daily_trend": [dict(r) for r in daily_trend],
         }
 
 
@@ -489,7 +549,7 @@ def upsert_graded_props(valued_props: list, game_date: str) -> int:
                 else vp.prop.over_odds_decimal
             )
             factor_scores: dict[str, float | None] = {f.name: f.score for f in vp.factors}
-            market_label = config.MARKET_MAP.get(vp.prop.market, {}).get("label", vp.prop.market)
+            market_label = config.get_market_label(vp.prop.market)
             game = vp.prop.game
             matchup = f"{game.away_team} @ {game.home_team}" if game else None
 
@@ -550,20 +610,27 @@ def upsert_graded_props(valued_props: list, game_date: str) -> int:
             # lastrowid returns the inserted id, or the existing id on conflict
             upserted_ids.append(cur.lastrowid)
 
-        # Mark stale: props for this date NOT in this batch → inactive
+        # Determine whether this batch is alt or regular so we only
+        # mark stale / recompute best_side within the same type.
+        batch_is_alt = int(
+            getattr(valued_props[0].prop, "is_alternate", False)
+        ) if valued_props else 0
+
+        # Mark stale: props of the SAME type for this date NOT in batch → inactive
         if upserted_ids:
             placeholders = ",".join("?" * len(upserted_ids))
             conn.execute(
                 f"""UPDATE graded_props SET is_active = 0
-                    WHERE game_date = ? AND id NOT IN ({placeholders})""",
-                [game_date] + upserted_ids,
+                    WHERE game_date = ? AND is_alternate = ?
+                      AND id NOT IN ({placeholders})""",
+                [game_date, batch_is_alt] + upserted_ids,
             )
 
-        # Compute is_best_side: for each (player, market, line, date),
-        # the side with the higher value_score gets is_best_side = 1
+        # Compute is_best_side within the SAME type only: for each
+        # (player, market, line, date), the side with higher value_score wins.
         conn.execute(
-            "UPDATE graded_props SET is_best_side = 0 WHERE game_date = ?",
-            (game_date,),
+            "UPDATE graded_props SET is_best_side = 0 WHERE game_date = ? AND is_alternate = ?",
+            (game_date, batch_is_alt),
         )
         conn.execute(
             """UPDATE graded_props SET is_best_side = 1
@@ -573,13 +640,73 @@ def upsert_graded_props(valued_props: list, game_date: str) -> int:
                            PARTITION BY player_name, market, line, game_date
                            ORDER BY value_score DESC
                        ) rn
-                       FROM graded_props WHERE game_date = ?
+                       FROM graded_props
+                       WHERE game_date = ? AND is_alternate = ?
                    ) WHERE rn = 1
                )""",
-            (game_date,),
+            (game_date, batch_is_alt),
         )
 
     return len(upserted_ids)
+
+
+def repair_deactivated_regular_props() -> int:
+    """One-time repair: restore regular props that were incorrectly marked
+    inactive by the old stale-marking bug (which didn't scope by is_alternate)."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE graded_props SET is_active = 1 WHERE is_alternate = 0 AND is_active = 0"
+        )
+        return cur.rowcount
+
+
+def get_alt_props(
+    game_date: str,
+    market: str | None = None,
+    player: str | None = None,
+    min_score: float | None = None,
+    side: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """Return graded alternate props for a given game date, sorted by value_score DESC."""
+    conditions = ["is_alternate = 1", "game_date = ?"]
+    params: list = [game_date]
+
+    if market:
+        conditions.append("(market LIKE ? OR market_label LIKE ?)")
+        params.extend([f"%{market}%", f"%{market}%"])
+    if player:
+        conditions.append("player_name LIKE ?")
+        params.append(f"%{player}%")
+    if min_score is not None:
+        conditions.append("value_score >= ?")
+        params.append(min_score)
+    if side in ("over", "under"):
+        conditions.append("side = ?")
+        params.append(side)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""SELECT id, player_name, nba_player_id, market, market_label,
+                       line, side, game_date,
+                       over_odds, under_odds, decimal_odds,
+                       bookmaker, is_paddy_power, is_alternate,
+                       value_score, recommendation,
+                       is_best_side, is_active, leg_result,
+                       matchup, graded_at, result_at,
+                       score_consistency, score_vs_opponent, score_home_away,
+                       score_injury, score_team_context, score_season_avg,
+                       score_blowout_risk, score_volume_context
+                FROM graded_props
+                WHERE {where}
+                ORDER BY value_score DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_unresolved_graded_props(game_date: str) -> list[dict]:
@@ -643,11 +770,17 @@ def get_prop_results(
     picks_only: bool = False,
     active_only: bool = False,
     graded_only: bool = True,
+    alt_filter:  str | None = "regular",  # "regular" | "alt" | "all"
     limit:      int = 500,
 ) -> list[dict]:
     """
     Return graded_props rows with optional filters.
     Ordered newest first (game_date DESC, value_score DESC).
+
+    alt_filter:
+      "regular" (default) — exclude alt lines (is_alternate = 0)
+      "alt"               — only alt lines (is_alternate = 1)
+      "all" / None        — no filter
     """
     conditions: list[str] = []
     params: list = []
@@ -658,6 +791,10 @@ def get_prop_results(
         conditions.append("is_best_side = 1")
     if active_only:
         conditions.append("is_active = 1")
+    if alt_filter == "regular":
+        conditions.append("is_alternate = 0")
+    elif alt_filter == "alt":
+        conditions.append("is_alternate = 1")
     if market:
         conditions.append("(market = ? OR market_label LIKE ?)")
         params.extend([market, f"%{market}%"])

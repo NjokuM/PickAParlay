@@ -30,6 +30,7 @@ from src.analysis.factors import (
     volume_context,
 )
 from src.analysis.scorer import compute_value_score, label_recommendation, detect_suspicious_line
+from src.analysis.return_from_injury import detect_return_from_injury
 
 
 def grade_prop(
@@ -45,7 +46,9 @@ def grade_prop(
     if season is None:
         season = config.DEFAULT_SEASON
     game = prop.game
-    market_cfg = config.MARKET_MAP.get(prop.market)
+    # Normalise alternate market keys: "player_points_alternate" → "player_points"
+    base_market = config.get_base_market(prop.market)
+    market_cfg = config.MARKET_MAP.get(base_market)
     if not market_cfg:
         return None
 
@@ -58,6 +61,9 @@ def grade_prop(
     df_raw = get_player_game_log(prop.nba_player_id, season=season)
     if df_raw.empty or len(df_raw) < config.MIN_GAMES_PLAYED:
         return None
+
+    # --- Detect returning-from-injury (gap ≥ 7 days in recent game log) ---
+    return_info = detect_return_from_injury(df_raw)
 
     # --- Determine game context (extract team from already-fetched log) ---
     player_team_abbr = _get_player_team(prop, game, df=df_raw)
@@ -81,6 +87,11 @@ def grade_prop(
 
     # --- Factor 1: Consistency ---
     f_consistency = consistency.compute(df_ctx, stat_col, prop.line, side=side)
+
+    # Apply return-from-injury penalty to consistency confidence
+    if return_info["is_returning"]:
+        f_consistency.confidence *= return_info["confidence_penalty"]
+        f_consistency.evidence.extend(return_info["evidence"])
 
     # --- Factor 2: vs Opponent ---
     h2h_team = get_h2h_record(
@@ -106,7 +117,7 @@ def grade_prop(
         prop.player_name,
         player_team_abbr,
         opponent_abbr,
-        prop.market,
+        base_market,
         injury_reports,
         side=side,
     )
@@ -114,6 +125,16 @@ def grade_prop(
     # Bail early if player is unavailable
     if injury_context.should_avoid(f_injury):
         return None
+
+    # Apply return-from-injury modifier to injury factor
+    if return_info["is_returning"]:
+        if side == "over":
+            f_injury.score = max(0.0, f_injury.score + return_info["injury_score_modifier"])
+        else:
+            # Boost UNDER confidence when player is returning from injury
+            boost = abs(return_info["injury_score_modifier"]) * 0.5
+            f_injury.score = min(100.0, f_injury.score + boost)
+        f_injury.evidence.extend(return_info["evidence"])
 
     # --- Factor 5: Team Context ---
     team_id = game.home_team_id if tonight_is_home else game.away_team_id
@@ -139,7 +160,7 @@ def grade_prop(
         h2h_avg_margin=h2h_team.get("avg_margin", 0),
         player_team_is_favorite=player_team_is_fav,
         player_is_starter=_player_is_starter,
-        market=prop.market,
+        market=base_market,
         home_team_id=game.home_team_id,
         away_team_id=game.away_team_id,
         season=season,
@@ -147,7 +168,14 @@ def grade_prop(
     )
 
     # --- Factor 8: Volume & Usage ---
-    f_volume = volume_context.compute(df_raw, stat_col, prop.line, prop.market, side=side)
+    # Pass depth depletion data from injury factor so volume_context can
+    # boost expected minutes when teammates are out.
+    depth_minutes_lost = f_injury.data.get("depth_minutes_lost", 0.0)
+    f_volume = volume_context.compute(
+        df_raw, stat_col, prop.line, base_market,
+        side=side,
+        teammate_minutes_lost=depth_minutes_lost,
+    )
 
     factors = [
         f_consistency,
@@ -179,6 +207,8 @@ def grade_prop(
             "tonight_home": tonight_is_home,
             "b2b": tonight_is_b2b,
             "side": side,
+            "returning_from_injury": return_info["is_returning"],
+            "games_since_return": return_info.get("games_since_return", 0),
         },
         suspicious_line=suspicious,
         suspicious_reason=suspicious_reason,

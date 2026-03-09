@@ -33,6 +33,7 @@ export default function AnalyticsPage() {
   const [data, setData]       = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeFactor, setActiveFactor] = useState("Consistency");
+  const [analyticsView, setAnalyticsView] = useState<"regular" | "alt">("regular");
 
   useEffect(() => {
     api.analytics().then(setData).catch(() => {}).finally(() => setLoading(false));
@@ -41,7 +42,9 @@ export default function AnalyticsPage() {
   if (loading) return <div style={{ color: "var(--muted)", padding: "60px 0", textAlign: "center" }}>Loading…</div>;
   if (!data) return null;
 
-  const { picks, slips, value_calibration, factor_calibration, by_market, by_side, daily_trend } = data;
+  const section = analyticsView === "regular" ? data.regular : data.alt;
+  const { picks, value_calibration, factor_calibration, by_market, by_side, daily_trend } = section;
+  const { slips } = data;
   const noData = picks.total === 0;
 
   // ── Derived chart data ────────────────────────────────────────────────
@@ -109,9 +112,19 @@ export default function AnalyticsPage() {
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 700 }}>📈 Analytics</h1>
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>
-          Model accuracy from all graded picks (is_best_side = 1).
+          {analyticsView === "regular"
+            ? "Core model accuracy from regular picks (excludes alt lines)."
+            : "Alt-line accuracy from ladder picks."}
           {noData && " Run a refresh then check results to see data here."}
         </p>
+        <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+          <button style={pill(analyticsView === "regular")} onClick={() => setAnalyticsView("regular")}>
+            Regular Props
+          </button>
+          <button style={pill(analyticsView === "alt")} onClick={() => setAnalyticsView("alt")}>
+            Alt Lines
+          </button>
+        </div>
       </div>
 
       {/* ── KPI Row ── */}

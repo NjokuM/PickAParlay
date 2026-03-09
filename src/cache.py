@@ -6,6 +6,7 @@ The request counter lives in .cache/api_credits.json and persists across runs.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -104,11 +105,22 @@ def load_scored_props_raw(
 # Odds API credit counter
 # ---------------------------------------------------------------------------
 
+def _key_hash() -> str:
+    """First 8 chars of SHA-256 of the current API key. Used to detect key changes."""
+    key = getattr(config, "ODDS_API_KEY", "") or ""
+    return hashlib.sha256(key.encode()).hexdigest()[:8]
+
+
 def _load_counter() -> dict:
     if not os.path.exists(_COUNTER_FILE):
-        return {"month": _current_month(), "used": 0}
+        return {"month": _current_month(), "used": 0, "key_hash": _key_hash()}
     with open(_COUNTER_FILE) as f:
-        return json.load(f)
+        counter = json.load(f)
+    # Reset if key changed or month rolled over
+    current_hash = _key_hash()
+    if counter.get("key_hash") != current_hash or counter["month"] != _current_month():
+        return {"month": _current_month(), "used": 0, "key_hash": current_hash}
+    return counter
 
 
 def _save_counter(counter: dict) -> None:
@@ -128,9 +140,8 @@ def record_api_request(n: int = 1) -> None:
     Prefer sync_credits_from_header() for accuracy.
     """
     counter = _load_counter()
-    if counter["month"] != _current_month():
-        counter = {"month": _current_month(), "used": 0}
     counter["used"] += n
+    counter["key_hash"] = _key_hash()
     _save_counter(counter)
 
 
@@ -145,7 +156,7 @@ def sync_credits_from_header(used: int, remaining: int | None = None) -> None:
     credits_summary() display is accurate for any plan tier.
     """
     _ensure_dir()
-    counter = {"month": _current_month(), "used": used}
+    counter = {"month": _current_month(), "used": used, "key_hash": _key_hash()}
     if remaining is not None:
         counter["limit"] = used + remaining   # e.g. 47 used + 453 remaining = 500 limit
     _save_counter(counter)

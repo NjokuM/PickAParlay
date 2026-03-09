@@ -90,12 +90,18 @@ def fetch_game_ids_for_date(game_date: str) -> list[str]:
         date_fmt = game_date
 
     time.sleep(config.NBA_API_SLEEP)
-    raw = scoreboardv2.ScoreboardV2(game_date=date_fmt).get_dict()
+    try:
+        raw = scoreboardv2.ScoreboardV2(game_date=date_fmt).get_dict()
+    except Exception:
+        return []   # API failure — return empty rather than crash
 
     game_ids: list[str] = []
     for rs in raw.get("resultSets", []):
         if rs["name"] == "GameHeader":
-            gid_idx = rs["headers"].index("GAME_ID")
+            try:
+                gid_idx = rs["headers"].index("GAME_ID")
+            except ValueError:
+                continue
             for row in rs["rowSet"]:
                 game_ids.append(row[gid_idx])
     return game_ids
@@ -113,7 +119,11 @@ def fetch_box_scores(game_date: str) -> dict[str, dict[str, float]]:
 
     for gid in game_ids:
         time.sleep(config.NBA_API_SLEEP)
-        raw = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=gid).get_dict()
+        try:
+            raw = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=gid).get_dict()
+        except Exception:
+            # Game may not have been played yet — skip and grade the rest
+            continue
         box = raw.get("boxScoreTraditional", {})
 
         for team_key in ("homeTeam", "awayTeam"):
@@ -151,6 +161,9 @@ def check_leg(
     Grade a single prop leg.
     Returns "HIT", "MISS", or None (player not in box scores — DNP / not found).
     """
+    # Normalise _alternate suffix so alt-line legs resolve correctly
+    market = config.get_base_market(market)
+
     pstats = player_stats.get(player_name.lower())
     if pstats is None:
         return None  # No data — player didn't play or name mismatch

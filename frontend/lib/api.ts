@@ -42,6 +42,7 @@ export interface Factor {
 }
 
 export interface Prop {
+  prop_id: number | null;
   player_name: string;
   player_id: number;
   market: string;
@@ -130,24 +131,26 @@ export interface SavedSlip {
   legs: SavedLeg[];
 }
 
-export interface Analytics {
-  picks: {
-    total: number;
-    hits: number;
-    misses: number;
-    hit_rate: number;
-  };
+export interface PickAnalytics {
+  picks: { total: number; hits: number; misses: number; hit_rate: number };
+  value_calibration: { bucket: number; total: number; hits: number }[];
+  factor_calibration: Record<string, { bucket: number; total: number; hits: number }[]>;
+  by_market: { market_label: string; total: number; hits: number }[];
+  by_side: { side: string; total: number; hits: number }[];
+  daily_trend: { game_date: string; total: number; hits: number }[];
+}
+
+export interface Analytics extends PickAnalytics {
+  // Separated sections
+  regular: PickAnalytics;
+  alt: PickAnalytics;
+  // Slip stats (not split by type)
   slips: {
     total_slips: number;
     wins: number;
     win_rate: number;
     total_pnl: number;
   };
-  value_calibration: { bucket: number; total: number; hits: number }[];
-  factor_calibration: Record<string, { bucket: number; total: number; hits: number }[]>;
-  by_market: { market_label: string; total: number; hits: number }[];
-  by_side: { side: string; total: number; hits: number }[];
-  daily_trend: { game_date: string; total: number; hits: number }[];
 }
 
 export interface Credits {
@@ -173,6 +176,16 @@ export interface LadderStatus {
   finished_at: string | null;
   status: "idle" | "running" | "done" | "no_games" | "no_props" | "error";
   props_graded: number;
+  error: string | null;
+}
+
+export interface AltRefreshStatus {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  status: "idle" | "running" | "done" | "no_games" | "no_props" | "error";
+  props_graded: number;
+  props_total: number;
   error: string | null;
 }
 
@@ -291,6 +304,28 @@ export const api = {
     results: () => get<Slip[]>("/api/ladder/results"),
   },
 
+  altRefresh: {
+    run: () => post<{ status: string }>("/api/alt-refresh"),
+    status: () => get<AltRefreshStatus>("/api/alt-refresh/status"),
+  },
+
+  altProps: (params?: {
+    market?: string;
+    player?: string;
+    min_score?: number;
+    side?: string;
+    limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.market)            qs.set("market",    params.market);
+    if (params?.player)            qs.set("player",    params.player);
+    if (params?.min_score != null) qs.set("min_score", String(params.min_score));
+    if (params?.side)              qs.set("side",       params.side);
+    if (params?.limit != null)     qs.set("limit",     String(params.limit));
+    const q = qs.toString();
+    return get<PropResult[]>(`/api/alt-props${q ? `?${q}` : ""}`);
+  },
+
   propResults: (params?: {
     market?: string; player?: string;
     date_from?: string; date_to?: string;
@@ -298,6 +333,7 @@ export const api = {
     side?: string; limit?: number;
     picks_only?: boolean; active_only?: boolean;
     graded_only?: boolean;
+    alt_filter?: "regular" | "alt" | "all";
   }) => {
     const qs = new URLSearchParams();
     if (params?.market)            qs.set("market",      params.market);
@@ -311,6 +347,7 @@ export const api = {
     if (params?.picks_only)        qs.set("picks_only",  "true");
     if (params?.active_only)       qs.set("active_only", "true");
     if (params?.graded_only != null) qs.set("graded_only", String(params.graded_only));
+    if (params?.alt_filter)        qs.set("alt_filter",  params.alt_filter);
     const q = qs.toString();
     return get<PropResult[]>(`/api/prop-results${q ? `?${q}` : ""}`);
   },
@@ -320,6 +357,12 @@ export const api = {
       post<{ status: string }>(`/api/results/check?game_date=${encodeURIComponent(gameDate)}`),
     status: () => get<ResultsStatus>("/api/results/status"),
   },
+
+  saveCustomSlip: (legIds: number[]) =>
+    post<{ slip_id: number; saved: boolean; combined_odds: number }>(
+      "/api/slips/custom",
+      { leg_ids: legIds },
+    ),
 
   history: (limit = 20) => get<SavedSlip[]>(`/api/history?limit=${limit}`),
 
