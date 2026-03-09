@@ -20,6 +20,39 @@ import config
 
 
 # ---------------------------------------------------------------------------
+# Factor name normalisation
+# ---------------------------------------------------------------------------
+
+def _normalise_factor_scores(factors: list) -> dict[str, float | None]:
+    """
+    Build a canonical factor-name → score dict from FactorResult objects.
+
+    Some factors use dynamic names (e.g. "vs BOS", "Home Performance")
+    so we pattern-match into the stable column keys used by the DB.
+    """
+    mapping: dict[str, float | None] = {}
+    for f in factors:
+        low = f.name.lower()
+        if low == "consistency":
+            mapping["Consistency"] = f.score
+        elif low.startswith("vs "):
+            mapping["vs Opponent"] = f.score
+        elif "performance" in low or low == "home/away":
+            mapping["Home/Away"] = f.score
+        elif "injury" in low:
+            mapping["Injury Context"] = f.score
+        elif "team" in low:
+            mapping["Team Context"] = f.score
+        elif "season" in low:
+            mapping["Season Average"] = f.score
+        elif "blowout" in low:
+            mapping["Blowout Risk"] = f.score
+        elif "volume" in low or "usage" in low:
+            mapping["Volume & Usage"] = f.score
+    return mapping
+
+
+# ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
 
@@ -281,7 +314,7 @@ def save_slip(
         for leg in slip.legs:
             vp = leg.valued_prop
             # Extract factor scores by factor name
-            factor_scores: dict[str, float | None] = {f.name: f.score for f in vp.factors}
+            factor_scores = _normalise_factor_scores(vp.factors)
             market_label = config.get_market_label(vp.prop.market)
 
             conn.execute(
@@ -548,7 +581,7 @@ def upsert_graded_props(valued_props: list, game_date: str) -> int:
                 vp.prop.under_odds_decimal if side == "under"
                 else vp.prop.over_odds_decimal
             )
-            factor_scores: dict[str, float | None] = {f.name: f.score for f in vp.factors}
+            factor_scores = _normalise_factor_scores(vp.factors)
             market_label = config.get_market_label(vp.prop.market)
             game = vp.prop.game
             matchup = f"{game.away_team} @ {game.home_team}" if game else None

@@ -668,7 +668,7 @@ def get_prop_results_endpoint(
     active_only: bool            = Query(default=False),
     graded_only: bool            = Query(default=True),
     alt_filter:  Optional[str]   = Query(default="regular"),  # "regular"|"alt"|"all"
-    limit:       int             = Query(default=500),
+    limit:       int             = Query(default=5000),
 ) -> list[dict]:
     """Individual graded props from graded_props table with optional filters."""
     return database.get_prop_results(
