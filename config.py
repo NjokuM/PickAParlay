@@ -198,7 +198,7 @@ EU_MARKETS: list[str] = [
 US_ONLY_MARKETS: list[str] = [
     "player_points_rebounds", "player_points_assists", "player_rebounds_assists",
 ]
-US_COMBO_BOOKMAKERS: str = "fanduel,draftkings,betmgm"
+US_COMBO_BOOKMAKERS: str = "fanduel,draftkings"
 ODDS_MARKETS_GAME: str = "h2h,spreads"
 PREFERRED_BOOKMAKER: str = "bet365"
 FALLBACK_BOOKMAKER: str = "paddypower"
