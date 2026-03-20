@@ -396,24 +396,42 @@ def _extract_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:
             if mkt not in markets:
                 continue
 
-            # Group outcomes by player
-            player_outcomes: dict[str, dict] = {}
+            # Group outcomes by (player, line) to avoid cross-line mismatches
+            # when a bookmaker offers multiple lines (e.g. Bovada: O4.5, O5.5, O6.5)
+            line_outcomes: dict[tuple[str, float], dict] = {}
             for outcome in market.get("outcomes", []):
                 player = outcome.get("description", "")
                 if not player:
                     continue
                 side = outcome.get("name", "")
                 point = outcome.get("point")
+                if point is None:
+                    continue
                 price = _decimal_odds(outcome.get("price"))
 
-                if player not in player_outcomes:
-                    player_outcomes[player] = {"over": None, "under": None, "line": None}
+                lk = (player, float(point))
+                if lk not in line_outcomes:
+                    line_outcomes[lk] = {"over": None, "under": None, "line": point}
 
                 if side == "Over":
-                    player_outcomes[player]["over"] = price
-                    player_outcomes[player]["line"] = point
+                    line_outcomes[lk]["over"] = price
                 elif side == "Under":
-                    player_outcomes[player]["under"] = price
+                    line_outcomes[lk]["under"] = price
+
+            # Pick ONE line per player: prefer the line closest to even odds
+            # (middle line = primary, extremes = alternates)
+            player_outcomes: dict[str, dict] = {}
+            for (player, _pt), od in line_outcomes.items():
+                if od["over"] is None or od["under"] is None:
+                    continue
+                # Score by how balanced the odds are (closest to even = primary)
+                balance = abs(od["over"] - od["under"])
+                if player not in player_outcomes or balance < player_outcomes[player]["_balance"]:
+                    player_outcomes[player] = {**od, "_balance": balance}
+
+            # Strip internal key before downstream use
+            for od in player_outcomes.values():
+                od.pop("_balance", None)
 
             for player, odds_data in player_outcomes.items():
                 key = (player, mkt)
