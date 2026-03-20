@@ -24,7 +24,7 @@ from src.analysis.factors import (
     vs_opponent,
     home_away,
     injury_context,
-    team_context,
+    opponent_defense,
     season_avg,
     blowout_risk,
     volume_context,
@@ -136,9 +136,14 @@ def grade_prop(
             f_injury.score = min(100.0, f_injury.score + boost)
         f_injury.evidence.extend(return_info["evidence"])
 
-    # --- Factor 5: Team Context ---
-    team_id = game.home_team_id if tonight_is_home else game.away_team_id
-    f_team = team_context.compute(team_id, player_team_abbr, season=season, side=side)
+    # --- Factor 5: Opponent Defense ---
+    opponent_team_id = game.away_team_id if tonight_is_home else game.home_team_id
+    f_opp_def = opponent_defense.compute(
+        opponent_team_id=opponent_team_id,
+        market=base_market,
+        side=side,
+        season=season,
+    )
 
     # --- Factor 6: Season Average ---
     f_season = season_avg.compute(df_raw, stat_col, prop.line, side=side)
@@ -148,7 +153,6 @@ def grade_prop(
     if game.odds_event_id:
         spread = get_game_spread(game.odds_event_id)
 
-    opponent_team_id = game.away_team_id if tonight_is_home else game.home_team_id
     player_team_is_fav = _team_is_favorite(spread, tonight_is_home)
 
     # Determine starter vs bench from recent minutes (>= 24 MPG = starter)
@@ -179,10 +183,10 @@ def grade_prop(
 
     factors = [
         f_consistency,
+        f_opp_def,
         f_vs_opp,
         f_home_away,
         f_injury,
-        f_team,
         f_season,
         f_blowout,
         f_volume,

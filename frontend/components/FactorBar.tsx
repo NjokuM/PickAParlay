@@ -3,15 +3,14 @@
 import { Factor } from "@/lib/api";
 
 const COLORS: Record<string, string> = {
-  Consistency:       "#58a6ff",
-  "vs Opponent":     "#bc8cff",
-  "Home/Away":       "#ffa657",
-  "Injury Context":  "#3fb950",
-  "Team Context":    "#39d353",
-  "Season Average":  "#f0883e",
-  "Blowout Risk":    "#f85149",
-  "Line Value":      "#6e7681",
-  "Volume & Usage":  "#56d364",
+  Consistency:         "#58a6ff",
+  "Opponent Defense":  "#da3633",
+  "vs Opponent":       "#bc8cff",
+  "Home/Away":         "#ffa657",
+  "Injury Context":    "#3fb950",
+  "Season Average":    "#f0883e",
+  "Blowout Risk":      "#f85149",
+  "Volume & Usage":    "#56d364",
 };
 
 function scoreColor(s: number): string {

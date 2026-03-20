@@ -132,7 +132,7 @@ def print_games_table(games: list) -> None:
 
 def print_valued_prop(vp: ValuedProp, rank: int | None = None) -> None:
     market_label = config.get_market_label(vp.prop.market)
-    bookie_tag = "[PP]" if vp.prop.is_paddy_power else f"[{vp.prop.bookmaker}]"
+    bookie_tag = "[B365]" if vp.prop.is_paddy_power else f"[{vp.prop.bookmaker}]"
     score_col = _score_colour(vp.value_score)
     rec_col = _rec_colour(vp.recommendation)
 
@@ -146,7 +146,7 @@ def print_valued_prop(vp: ValuedProp, rank: int | None = None) -> None:
     )
 
     if not vp.prop.is_paddy_power:
-        title += "  [dim yellow]⚠ Best available (PP not offering)[/dim yellow]"
+        title += "  [dim yellow]⚠ Best available (B365 not offering)[/dim yellow]"
     if vp.suspicious_line:
         title += f"\n  [bold yellow]⚠ Suspicious line: {vp.suspicious_reason}[/bold yellow]"
 
@@ -190,7 +190,7 @@ def print_slip(slip: BetSlip, rank: int) -> None:
     for i, leg in enumerate(slip.legs, 1):
         vp = leg.valued_prop
         market_label = config.get_market_label(vp.prop.market)
-        bookie_tag = "[PP]" if vp.prop.is_paddy_power else f"[{vp.prop.bookmaker}]"
+        bookie_tag = "[B365]" if vp.prop.is_paddy_power else f"[{vp.prop.bookmaker}]"
         score_col_leg = _score_colour(vp.value_score)
         rec = vp.recommendation
         suspicious_tag = "  [bold yellow]⚠ CHECK LINE[/bold yellow]" if vp.suspicious_line else ""

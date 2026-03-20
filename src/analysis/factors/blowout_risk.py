@@ -1,11 +1,16 @@
 """
-Factor 7: Blowout Risk (1%)
+Factor: Blowout Risk (10%)
 Uses the game spread + H2H margin history + team average win margin
 to estimate how likely this game is to become a blowout.
 
+Empirically redesigned with market-specific sensitivity multipliers:
+  - Reb+Ast and 3PM are most damaged by blowouts (+27-35pp gap)
+  - Points and basic combos are moderately affected (+14-16pp)
+
 Direction-aware:
   OVER:  high blowout risk = starters pulled early = stats cut short = BAD (low score)
-  UNDER: high blowout risk = starters sit = harder to accumulate stats = GOOD (high score)
+  UNDER: high blowout risk = starters sit = fewer stats = GOOD (moderate score)
+         Data shows only ~4pp variance on UNDER, so we keep scoring flatter.
 """
 from __future__ import annotations
 
@@ -16,9 +21,18 @@ import config
 from src.models import FactorResult
 from src.api.nba_stats import get_team_avg_win_margin
 
-# Markets where blowout has limited impact (free throws, specific shot types)
-_NON_COUNTING_MARKETS = {"player_threes", "player_blocks", "player_steals"}
-# These are less affected by game pace/blowout than minutes-dependent stats
+# Market-specific blowout sensitivity multipliers (from empirical data)
+# Higher = more affected by blowouts
+MARKET_BLOWOUT_SENSITIVITY: dict[str, float] = {
+    "player_rebounds_assists":         1.4,   # +35pp gap — most affected
+    "player_threes":                   1.3,   # +27pp gap
+    "player_points_assists":           1.1,   # +18pp gap
+    "player_points_rebounds_assists":   1.0,   # +16pp — baseline
+    "player_points":                   1.0,   # +15pp
+    "player_rebounds":                 0.9,   # +14pp
+    "player_assists":                  0.9,   # +14pp
+    "player_points_rebounds":          0.8,   # +12pp — least affected
+}
 
 
 def compute(
@@ -32,38 +46,29 @@ def compute(
     season: str | None = None,
     side: str = "over",
 ) -> FactorResult:
-    """
-    spread: absolute value of the point spread (e.g. 12.5 for OKC -12.5).
-            None if unavailable.
-    h2h_avg_margin: team's average margin in H2H games vs tonight's opponent.
-    player_team_is_favorite: True if the player's team is favoured.
-    player_is_starter: False = bench player → heavier penalty.
-    market: prop market key (e.g. "player_points").
-    """
     if season is None:
         season = config.DEFAULT_SEASON
     weight = config.FACTOR_WEIGHTS["blowout_risk"]
 
     evidence: list[str] = []
 
-    # --- Early return when no data is available to assess risk ---
+    # --- Early return when no data is available ---
     if spread is None and h2h_avg_margin == 0:
         return FactorResult(
             name="Blowout Risk",
             score=50.0,
             weight=weight,
-            evidence=["Spread unavailable — blowout risk unknown, using neutral score"],
-            data={"blowout_risk": None, "spread": None, "h2h_avg_margin": 0, "penalty_applied": False},
+            evidence=["Spread unavailable — blowout risk unknown, neutral score"],
+            data={"blowout_risk": None, "spread": None, "h2h_avg_margin": 0},
             confidence=0.0,
         )
 
-    # --- Blowout risk calculation ---
+    # --- Blowout risk calculation (unchanged core) ---
     spread_abs = abs(spread) if spread is not None else 0.0
     spread_risk = min(1.0, spread_abs / config.BLOWOUT_SPREAD_NORMALISER)
 
     h2h_risk = min(1.0, abs(h2h_avg_margin) / config.BLOWOUT_SPREAD_NORMALISER)
 
-    # Team's avg win margin (dominant teams tend to blow teams out)
     team_id = home_team_id if player_team_is_favorite else away_team_id
     team_style_risk = 0.0
     if team_id:
@@ -79,46 +84,45 @@ def compute(
     )
 
     if spread is not None:
-        evidence.append(f"Spread: {spread:+.1f} → spread risk: {spread_risk:.0%}")
+        evidence.append(f"Spread: {spread:+.1f} → risk: {spread_risk:.0%}")
     else:
-        evidence.append("Spread unavailable — using H2H and team style only")
+        evidence.append("Spread unavailable — using H2H + team style")
 
-    evidence.append(f"H2H avg margin: {h2h_avg_margin:+.1f} → H2H risk: {h2h_risk:.0%}")
+    evidence.append(f"H2H margin: {h2h_avg_margin:+.1f} → risk: {h2h_risk:.0%}")
     evidence.append(f"Combined blowout risk: {blowout_risk:.0%}")
 
-    # --- Convert blowout risk into a score penalty ---
-    # score of 100 = no blowout risk; score goes down as risk goes up
-    is_non_counting = market in _NON_COUNTING_MARKETS
+    # --- OVER scoring: steeper penalty curve with market sensitivity ---
+    market_mult = MARKET_BLOWOUT_SENSITIVITY.get(market, 1.0)
 
-    if blowout_risk > config.BLOWOUT_RISK_CUTOFF:
-        if is_non_counting:
-            penalty = config.BLOWOUT_PENALTY_NON_COUNTING
-        elif not player_is_starter:
-            penalty = config.BLOWOUT_PENALTY_BENCH
-        elif player_team_is_favorite:
-            penalty = config.BLOWOUT_PENALTY_FAVORITE_STAR
+    if side == "over":
+        if blowout_risk > config.BLOWOUT_RISK_CUTOFF:
+            # Danger zone — strong penalty, scaled by market sensitivity
+            base_penalty = 0.20 + blowout_risk * 0.25  # 0.34 to 0.45
+            if not player_is_starter:
+                base_penalty *= 1.3  # Bench players hit harder
+            elif not player_team_is_favorite:
+                base_penalty *= 1.1  # Underdog starters slightly worse
+            penalty = min(0.55, base_penalty * market_mult)
+            score = round((1.0 - penalty) * 100, 1)
+            evidence.append(
+                f"High blowout risk — penalty: {penalty:.0%} "
+                f"(market sensitivity: {market_mult:.1f}x)"
+            )
         else:
-            penalty = config.BLOWOUT_PENALTY_UNDERDOG_STAR
-
-        score = round((1.0 - penalty) * 100, 1)
-        evidence.append(
-            f"⚠️  High blowout risk ({blowout_risk:.0%}) — "
-            f"{'non-counting' if is_non_counting else 'starter' if player_is_starter else 'bench'} "
-            f"penalty: -{penalty:.0%}"
-        )
+            # Low risk zone — mild linear penalty
+            penalty = blowout_risk * 0.15 * market_mult
+            score = round((1.0 - penalty) * 100, 1)
+            evidence.append(f"Blowout risk acceptable ({blowout_risk:.0%})")
     else:
-        score = round((1.0 - blowout_risk * 0.3) * 100, 1)  # Mild penalty at low risk
-        evidence.append(f"Blowout risk within acceptable range ({blowout_risk:.0%})")
-
-    # For UNDER: use blowout_risk directly — 50 is neutral (no risk), scores up with risk.
-    # A simple inversion (100 - over_score) would make the neutral baseline 0, which is wrong.
-    # Instead: neutral (risk=0) → 50, maximum risk (risk=1.0) → 90
-    if side == "under":
-        score = round(min(100.0, 50.0 + blowout_risk * 40.0), 1)
+        # --- UNDER scoring: flatter curve (data shows only ~4pp variance) ---
+        # Neutral at risk=0 → 55, mild boost up to 70 at max risk
+        score = round(55.0 + blowout_risk * 15.0, 1)
         evidence.append(
-            f"UNDER: blowout risk {blowout_risk:.0%} → favours UNDER "
-            f"(starters may sit early, fewer stats)"
+            f"UNDER: blowout risk {blowout_risk:.0%} → mild boost "
+            f"(starters may sit early)"
         )
+
+    score = max(0.0, min(100.0, score))
 
     return FactorResult(
         name="Blowout Risk",
@@ -129,7 +133,7 @@ def compute(
             "blowout_risk": blowout_risk,
             "spread": spread,
             "h2h_avg_margin": h2h_avg_margin,
-            "penalty_applied": blowout_risk > config.BLOWOUT_RISK_CUTOFF,
+            "market_sensitivity": market_mult,
         },
         confidence=1.0,
     )

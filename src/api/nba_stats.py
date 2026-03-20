@@ -21,6 +21,7 @@ from nba_api.stats.endpoints import (
     LeagueDashTeamStats,
     LeagueDashPlayerStats,
     TeamGameLog,
+    LeagueGameLog,
     CommonPlayerInfo,
 )
 from nba_api.stats.static import players as nba_players_static
@@ -181,7 +182,7 @@ def get_player_game_log(
         return df
 
     df = _add_computed_stats(df)
-    df = _flag_overtime_games(df)
+    df = _flag_overtime_games(df, season=season)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="mixed")
     df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
 
@@ -208,15 +209,63 @@ def _add_computed_stats(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _flag_overtime_games(df: pd.DataFrame) -> pd.DataFrame:
+def _get_overtime_game_ids(season: str | None = None) -> set[str]:
     """
-    Add IS_OT column. nba_api doesn't expose a direct OT flag but
-    MIN (minutes played) > 40 is a reasonable proxy for OT involvement.
+    Return set of Game_IDs for games that went to overtime.
+
+    Uses LeagueGameLog (team-level) where team total MIN > 245
+    (regulation = 240, 1OT = 265, 2OT = 290).
+    Cached for 24 hours.
     """
-    if "MIN" in df.columns:
-        df["IS_OT"] = df["MIN"].apply(_parse_minutes) > 40
-    else:
+    if season is None:
+        season = config.DEFAULT_SEASON
+    cache_key = f"ot_game_ids_{season}"
+    cached = cache_get(cache_key, config.CACHE_TTL["game_log"])
+    if cached is not None:
+        return set(cached)
+
+    _sleep()
+    try:
+        log = LeagueGameLog(
+            season=season,
+            player_or_team_abbreviation="T",
+            season_type_all_star="Regular Season",
+        )
+        tdf = log.league_game_log.get_data_frame()
+    except Exception:
+        return set()
+
+    if tdf.empty:
+        return set()
+
+    # Team-level MIN: 240 = regulation, >245 = overtime
+    ot_ids = set()
+    for _, row in tdf.iterrows():
+        try:
+            mins = float(row["MIN"])
+        except (ValueError, TypeError):
+            continue
+        if mins > 245:
+            ot_ids.add(str(row["GAME_ID"]))
+
+    cache_set(cache_key, list(ot_ids))
+    return ot_ids
+
+
+def _flag_overtime_games(df: pd.DataFrame, season: str | None = None) -> pd.DataFrame:
+    """
+    Add IS_OT column using actual game-level data.
+
+    Checks team total minutes via LeagueGameLog — if team MIN > 245 for
+    that Game_ID, it's an overtime game. This is accurate unlike the old
+    approach of checking individual player minutes > 40.
+    """
+    if "Game_ID" not in df.columns:
         df["IS_OT"] = False
+        return df
+
+    ot_ids = _get_overtime_game_ids(season)
+    df["IS_OT"] = df["Game_ID"].astype(str).isin(ot_ids)
     return df
 
 
@@ -296,6 +345,108 @@ def get_team_pace_rank(team_id: int, season: str | None = None) -> tuple[float, 
     df_sorted = df.sort_values("PACE", ascending=False).reset_index(drop=True)
     rank = int(df_sorted[df_sorted["TEAM_ID"] == team_id].index[0]) + 1
     return pace, rank
+
+
+# ---------------------------------------------------------------------------
+# Team defensive stats (opponent stats allowed per game)
+# ---------------------------------------------------------------------------
+
+def get_team_defensive_stats(season: str | None = None) -> pd.DataFrame:
+    """
+    Return opponent stats allowed per game for all 30 teams.
+    Uses LeagueDashTeamStats with measure_type='Opponent'.
+    Cached 24h via team_stats TTL.
+    """
+    if season is None:
+        season = config.DEFAULT_SEASON
+    cache_key = f"team_def_stats_{season}"
+    cached = cache_get(cache_key, config.CACHE_TTL["team_stats"])
+    if cached:
+        return pd.DataFrame(cached)
+
+    _sleep()
+    try:
+        stats = LeagueDashTeamStats(
+            season=season,
+            measure_type_detailed_defense="Opponent",
+        )
+        df = stats.league_dash_team_stats.get_data_frame()
+    except Exception:
+        return pd.DataFrame()
+
+    cache_set(cache_key, df.to_dict(orient="records"))
+    return df
+
+
+def get_team_advanced_stats(season: str | None = None) -> pd.DataFrame:
+    """
+    Return advanced stats (PACE, DEF_RATING, OFF_RATING) for all 30 teams.
+    Cached 24h via team_stats TTL.
+    """
+    if season is None:
+        season = config.DEFAULT_SEASON
+    cache_key = f"team_adv_stats_{season}"
+    cached = cache_get(cache_key, config.CACHE_TTL["team_stats"])
+    if cached:
+        return pd.DataFrame(cached)
+
+    _sleep()
+    try:
+        stats = LeagueDashTeamStats(
+            season=season,
+            measure_type_detailed_defense="Advanced",
+        )
+        df = stats.league_dash_team_stats.get_data_frame()
+    except Exception:
+        return pd.DataFrame()
+
+    cache_set(cache_key, df.to_dict(orient="records"))
+    return df
+
+
+def get_opponent_defensive_profile(opponent_team_id: int, season: str | None = None) -> dict | None:
+    """
+    Return {OPP_PTS, OPP_AST, OPP_REB, OPP_FG3M, PACE, DEF_RATING}
+    plus percentile ranks for the given opponent team.
+    """
+    if season is None:
+        season = config.DEFAULT_SEASON
+
+    df_def = get_team_defensive_stats(season)
+    df_adv = get_team_advanced_stats(season)
+
+    if df_def.empty or df_adv.empty:
+        return None
+
+    def_row = df_def[df_def["TEAM_ID"] == opponent_team_id]
+    adv_row = df_adv[df_adv["TEAM_ID"] == opponent_team_id]
+    if def_row.empty or adv_row.empty:
+        return None
+
+    row_d = def_row.iloc[0]
+    row_a = adv_row.iloc[0]
+    gp = float(row_d.get("GP", 1)) or 1.0
+
+    # Convert totals to per-game for ranking
+    stat_keys = ["OPP_PTS", "OPP_AST", "OPP_REB", "OPP_FG3M"]
+    result: dict = {"TEAM_NAME": row_d.get("TEAM_NAME", "")}
+
+    for key in stat_keys:
+        val = float(row_d.get(key, 0)) / gp
+        result[key] = round(val, 1)
+        # Compute percentile (0 = best defense, 1 = worst defense)
+        all_vals = (df_def[key].astype(float) / df_def["GP"].astype(float)).values
+        pct = float((all_vals < val).sum()) / len(all_vals)
+        result[f"{key}_pct"] = round(pct, 3)
+
+    # Pace from advanced stats
+    result["PACE"] = float(row_a.get("PACE", 100.0))
+    all_pace = df_adv["PACE"].astype(float).values
+    result["PACE_pct"] = round(float((all_pace < result["PACE"]).sum()) / len(all_pace), 3)
+
+    result["DEF_RATING"] = float(row_a.get("DEF_RATING", 110.0))
+
+    return result
 
 
 def _get_raw_team_game_log(team_id: int, season: str | None = None) -> pd.DataFrame:

@@ -41,8 +41,8 @@ def _normalise_factor_scores(factors: list) -> dict[str, float | None]:
             mapping["Home/Away"] = f.score
         elif "injury" in low:
             mapping["Injury Context"] = f.score
-        elif "team" in low:
-            mapping["Team Context"] = f.score
+        elif "opponent" in low and "defense" in low:
+            mapping["Opponent Defense"] = f.score
         elif "season" in low:
             mapping["Season Average"] = f.score
         elif "blowout" in low:
@@ -199,6 +199,12 @@ def init_db() -> None:
         except Exception:
             pass
 
+        # Migration: add score_opponent_defense column (replaces team_context conceptually)
+        try:
+            conn.execute("ALTER TABLE graded_props ADD COLUMN score_opponent_defense REAL")
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Grading runs
@@ -255,7 +261,7 @@ def get_graded_props_by_ids(ids: list[int]) -> list[dict]:
                        bookmaker, is_paddy_power, is_alternate,
                        value_score, recommendation,
                        matchup, graded_at,
-                       score_consistency, score_vs_opponent, score_home_away,
+                       score_consistency, score_opponent_defense, score_vs_opponent, score_home_away,
                        score_injury, score_team_context, score_season_avg,
                        score_blowout_risk, score_volume_context
                 FROM graded_props
@@ -450,14 +456,14 @@ def _compute_pick_analytics(conn, is_alternate: int) -> dict:
 
     # ── Per-factor calibration (10-point buckets) ─────────────────
     factor_cols = [
-        ("score_consistency",    "Consistency"),
-        ("score_vs_opponent",    "vs Opponent"),
-        ("score_home_away",      "Home/Away"),
-        ("score_injury",         "Injury"),
-        ("score_team_context",   "Team Context"),
-        ("score_season_avg",     "Season Avg"),
-        ("score_blowout_risk",   "Blowout Risk"),
-        ("score_volume_context", "Volume & Usage"),
+        ("score_consistency",        "Consistency"),
+        ("score_opponent_defense",   "Opponent Defense"),
+        ("score_vs_opponent",        "vs Opponent"),
+        ("score_home_away",          "Home/Away"),
+        ("score_injury",             "Injury"),
+        ("score_season_avg",         "Season Avg"),
+        ("score_blowout_risk",       "Blowout Risk"),
+        ("score_volume_context",     "Volume & Usage"),
     ]
     factor_calibration: dict[str, list[dict]] = {}
     for col, label in factor_cols:
@@ -595,8 +601,9 @@ def upsert_graded_props(valued_props: list, game_date: str) -> int:
                     score_consistency, score_vs_opponent, score_home_away,
                     score_injury, score_team_context, score_season_avg,
                     score_blowout_risk, score_volume_context,
+                    score_opponent_defense,
                     is_active, graded_at, matchup)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
                    ON CONFLICT(player_name, market, line, side, game_date)
                    DO UPDATE SET
                      nba_player_id  = excluded.nba_player_id,
@@ -609,14 +616,15 @@ def upsert_graded_props(valued_props: list, game_date: str) -> int:
                      is_alternate   = excluded.is_alternate,
                      value_score    = excluded.value_score,
                      recommendation = excluded.recommendation,
-                     score_consistency    = excluded.score_consistency,
-                     score_vs_opponent    = excluded.score_vs_opponent,
-                     score_home_away      = excluded.score_home_away,
-                     score_injury         = excluded.score_injury,
-                     score_team_context   = excluded.score_team_context,
-                     score_season_avg     = excluded.score_season_avg,
-                     score_blowout_risk   = excluded.score_blowout_risk,
-                     score_volume_context = excluded.score_volume_context,
+                     score_consistency        = excluded.score_consistency,
+                     score_vs_opponent        = excluded.score_vs_opponent,
+                     score_home_away          = excluded.score_home_away,
+                     score_injury             = excluded.score_injury,
+                     score_team_context       = excluded.score_team_context,
+                     score_season_avg         = excluded.score_season_avg,
+                     score_blowout_risk       = excluded.score_blowout_risk,
+                     score_volume_context     = excluded.score_volume_context,
+                     score_opponent_defense   = excluded.score_opponent_defense,
                      is_active    = 1,
                      graded_at    = excluded.graded_at,
                      matchup      = excluded.matchup""",
@@ -632,10 +640,11 @@ def upsert_graded_props(valued_props: list, game_date: str) -> int:
                     factor_scores.get("vs Opponent"),
                     factor_scores.get("Home/Away"),
                     factor_scores.get("Injury Context"),
-                    factor_scores.get("Team Context"),
+                    None,  # score_team_context — retired, keep column for historical data
                     factor_scores.get("Season Average"),
                     factor_scores.get("Blowout Risk"),
                     factor_scores.get("Volume & Usage"),
+                    factor_scores.get("Opponent Defense"),
                     datetime.utcnow().isoformat(),
                     matchup,
                 ),
@@ -706,8 +715,10 @@ def get_alt_props(
     params: list = [game_date]
 
     if market:
-        conditions.append("(market LIKE ? OR market_label LIKE ?)")
-        params.extend([f"%{market}%", f"%{market}%"])
+        # URLSearchParams encodes "+" as space; restore before matching
+        market_norm = market.replace(" ", "+")
+        conditions.append("(market = ? OR market_label = ?)")
+        params.extend([market_norm, market_norm])
     if player:
         conditions.append("player_name LIKE ?")
         params.append(f"%{player}%")
@@ -730,7 +741,7 @@ def get_alt_props(
                        value_score, recommendation,
                        is_best_side, is_active, leg_result,
                        matchup, graded_at, result_at,
-                       score_consistency, score_vs_opponent, score_home_away,
+                       score_consistency, score_opponent_defense, score_vs_opponent, score_home_away,
                        score_injury, score_team_context, score_season_avg,
                        score_blowout_risk, score_volume_context
                 FROM graded_props
@@ -829,8 +840,10 @@ def get_prop_results(
     elif alt_filter == "alt":
         conditions.append("is_alternate = 1")
     if market:
-        conditions.append("(market = ? OR market_label LIKE ?)")
-        params.extend([market, f"%{market}%"])
+        # URLSearchParams encodes "+" as space; restore before matching
+        market_norm = market.replace(" ", "+")
+        conditions.append("(market = ? OR market_label = ?)")
+        params.extend([market_norm, market_norm])
     if player:
         conditions.append("player_name LIKE ?")
         params.append(f"%{player}%")
@@ -862,7 +875,7 @@ def get_prop_results(
                        value_score, recommendation,
                        is_best_side, is_active, leg_result,
                        matchup, graded_at, result_at,
-                       score_consistency, score_vs_opponent, score_home_away,
+                       score_consistency, score_opponent_defense, score_vs_opponent, score_home_away,
                        score_injury, score_team_context, score_season_avg,
                        score_blowout_risk, score_volume_context
                 FROM graded_props

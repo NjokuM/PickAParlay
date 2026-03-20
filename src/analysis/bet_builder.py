@@ -41,7 +41,7 @@ def build_slips(
     """
     # --- Bookmaker filter ---
     if bookmaker:
-        if bookmaker.lower() == "paddypower":
+        if bookmaker.lower() in ("bet365", "paddypower"):
             valued_props = [vp for vp in valued_props if vp.prop.is_paddy_power]
         else:
             valued_props = [vp for vp in valued_props if vp.prop.bookmaker == bookmaker.lower()]

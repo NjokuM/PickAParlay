@@ -31,6 +31,7 @@ def _get(path: str, params: dict) -> dict | list | None:
     if not config.ODDS_API_KEY:
         return None
     params["apiKey"] = config.ODDS_API_KEY
+    params.setdefault("oddsFormat", "decimal")
     url = f"{config.ODDS_API_BASE_URL}{path}"
     try:
         resp = requests.get(url, params=params, timeout=15)
@@ -49,14 +50,24 @@ def _get(path: str, params: dict) -> dict | list | None:
                 record_api_request(1)   # header malformed — fall back to +1
         else:
             record_api_request(1)       # no header at all — fall back to +1
+        if resp.status_code == 401:
+            print(f"[odds-api] ❌ API key rejected (401) — key may be invalid")
+            return None
+        if resp.status_code == 403:
+            print(f"[odds-api] ❌ API key out of credits (403) — swap to a fresh key")
+            return None
+        if resp.status_code == 429:
+            print(f"[odds-api] ❌ Rate limited (429) — too many requests")
+            return None
         resp.raise_for_status()
         return resp.json()
-    except requests.RequestException:
+    except requests.RequestException as exc:
+        print(f"[odds-api] ⚠️ Request failed: {exc}")
         return None
 
 
 def _decimal_odds(price: float | None) -> float:
-    """Ensure odds are in decimal format (The Odds API returns decimal)."""
+    """Ensure odds are in decimal format (we request oddsFormat=decimal)."""
     if price is None or price <= 0:
         return 0.0
     return round(float(price), 3)
@@ -119,7 +130,7 @@ def _paddy_odds_for_market(
 def get_events() -> list[dict]:
     """Fetch today's NBA events from The Odds API."""
     cache_key = "odds_events"
-    cached = cache_get(cache_key, config.CACHE_TTL["props"])
+    cached = cache_get(cache_key, config.CACHE_TTL["events"])
     if cached is not None:
         return cached
 
@@ -259,7 +270,7 @@ def get_game_spread(event_id: str) -> float | None:
     in the configured region.  Returns None if truly unavailable.
     """
     cache_key = f"spread_{event_id}"
-    cached = cache_get(cache_key, config.CACHE_TTL["props"])
+    cached = cache_get(cache_key, config.CACHE_TTL["spreads"])
     if cached is not None:
         return float(cached)
 
@@ -274,12 +285,12 @@ def get_game_spread(event_id: str) -> float | None:
     )
     spread = _extract_spread(data.get("bookmakers", [])) if data else None
 
-    # Fallback: any bookmaker in the region
+    # Fallback: any bookmaker in the EU region (no US — saves credits)
     if spread is None:
         data = _get(
             f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
             {
-                "regions": f"{config.ODDS_REGIONS},us",
+                "regions": config.ODDS_REGIONS,
                 "markets": "spreads",
             },
         )
@@ -309,33 +320,58 @@ def _extract_spread(bookmakers: list[dict]) -> float | None:
 def get_player_props_for_event(
     event_id: str,
     markets: list[str] | None = None,
+    force_fresh: bool = False,
 ) -> list[dict]:
     """
     Fetch all player prop outcomes for an event.
     Returns raw outcome dicts with player_name, market, line, over_odds, under_odds,
     bookmaker, is_paddy_power.
+
+    Two targeted calls to minimise credit usage:
+      1. EU region for core markets (Bet365/PP) — 5 markets × 1 credit each
+      2. US region for combo markets EU doesn't carry — 3 markets × 1 credit each
+    Total: 8 credits per game (same as single-region with 8 markets).
+
+    If force_fresh=True, cached props are ignored (used by smart refresh).
     """
     if markets is None:
         markets = list(config.MARKET_MAP.keys())
 
     cache_key = f"props_{event_id}_{'_'.join(sorted(markets))}"
-    cached = cache_get(cache_key, config.CACHE_TTL["props"])
-    if cached is not None:
-        return cached
+    if not force_fresh:
+        cached = cache_get(cache_key, config.CACHE_TTL["props"])
+        if cached is not None:
+            return cached
 
-    markets_str = ",".join(markets)
-    data = _get(
-        f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
-        {
-            "regions": config.ODDS_REGIONS,
-            "markets": markets_str,
-        },
-    )
-    if not data:
-        return []
+    results: list[dict] = []
 
-    bookmakers = data.get("bookmakers", [])
-    results = _extract_props(bookmakers, markets)
+    # Split markets by region to avoid 2x credit charge from eu,us
+    eu_markets = [m for m in markets if m in config.EU_MARKETS]
+    us_markets = [m for m in markets if m in config.US_ONLY_MARKETS]
+
+    # Call 1: EU region — core markets from Bet365/Paddy Power
+    if eu_markets:
+        data = _get(
+            f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
+            {
+                "regions": config.ODDS_REGIONS,
+                "markets": ",".join(eu_markets),
+            },
+        )
+        if data:
+            results.extend(_extract_props(data.get("bookmakers", []), eu_markets))
+
+    # Call 2: US region — combo markets (PR, PA, RA) not offered by EU books
+    if us_markets:
+        data = _get(
+            f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
+            {
+                "regions": config.ODDS_REGIONS_US,
+                "markets": ",".join(us_markets),
+            },
+        )
+        if data:
+            results.extend(_extract_props(data.get("bookmakers", []), us_markets))
 
     cache_set(cache_key, results)
     return results
@@ -344,10 +380,13 @@ def get_player_props_for_event(
 def _extract_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:
     """
     Extract player props from bookmakers list.
-    Prefers Paddy Power; falls back to best available line.
-    Returns one entry per (player, market) — the best available.
+    Priority chain: Bet365 → Paddy Power → best available odds.
+    Returns one entry per (player, market) — using the highest-priority bookmaker.
     """
-    # Index: (player_name, market) → {pp_over, pp_under, best_over, best_under, best_bookie}
+    preferred = config.PREFERRED_BOOKMAKER
+    fallback = config.FALLBACK_BOOKMAKER
+
+    # Index: (player_name, market) → per-bookmaker odds
     index: dict[tuple[str, str], dict] = {}
 
     for bm in bookmakers:
@@ -383,17 +422,24 @@ def _extract_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:
                         "player_name": player,
                         "market": mkt,
                         "line": odds_data["line"],
-                        "pp_over": 0.0,
-                        "pp_under": 0.0,
+                        "pref_over": 0.0,    # preferred bookmaker (Bet365)
+                        "pref_under": 0.0,
+                        "fb_over": 0.0,      # fallback bookmaker (Paddy Power)
+                        "fb_under": 0.0,
                         "best_over": 0.0,
                         "best_under": 0.0,
                         "best_bookie": "",
                     }
 
-                if bm_key == config.PREFERRED_BOOKMAKER:
-                    index[key]["pp_over"]  = odds_data["over"] or 0.0
-                    index[key]["pp_under"] = odds_data["under"] or 0.0
+                if bm_key == preferred:
+                    index[key]["pref_over"]  = odds_data["over"] or 0.0
+                    index[key]["pref_under"] = odds_data["under"] or 0.0
                     if odds_data["line"] is not None:
+                        index[key]["line"] = odds_data["line"]
+                elif bm_key == fallback:
+                    index[key]["fb_over"]  = odds_data["over"] or 0.0
+                    index[key]["fb_under"] = odds_data["under"] or 0.0
+                    if odds_data["line"] is not None and index[key]["line"] is None:
                         index[key]["line"] = odds_data["line"]
 
                 over = odds_data["over"] or 0.0
@@ -407,21 +453,36 @@ def _extract_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:
                 if under > index[key]["best_under"]:
                     index[key]["best_under"] = under
 
-    # Flatten to list of prop dicts, choosing PP if available
+    # Flatten: Bet365 → Paddy Power → best available
     results = []
     for (player, mkt), d in index.items():
         if d["line"] is None:
             continue
 
-        use_pp = d["pp_over"] > 0.0
+        if d["pref_over"] > 0.0:
+            over_odds = d["pref_over"]
+            under_odds = d["pref_under"]
+            bookie = preferred
+            is_preferred = True
+        elif d["fb_over"] > 0.0:
+            over_odds = d["fb_over"]
+            under_odds = d["fb_under"]
+            bookie = fallback
+            is_preferred = True
+        else:
+            over_odds = d["best_over"]
+            under_odds = d["best_under"]
+            bookie = d["best_bookie"]
+            is_preferred = False
+
         results.append({
             "player_name":      player,
             "market":           mkt,
             "line":             float(d["line"]),
-            "over_odds":        d["pp_over"] if use_pp else d["best_over"],
-            "under_odds":       d["pp_under"] if use_pp else d["best_under"],
-            "bookmaker":        config.PREFERRED_BOOKMAKER if use_pp else d["best_bookie"],
-            "is_paddy_power":   use_pp,
+            "over_odds":        over_odds,
+            "under_odds":       under_odds,
+            "bookmaker":        bookie,
+            "is_paddy_power":   is_preferred,  # repurposed: True = from preferred or fallback bookie
         })
 
     return results
@@ -547,3 +608,20 @@ def build_player_props(
             )
         )
     return props
+
+
+# ---------------------------------------------------------------------------
+# Smart refresh helpers
+# ---------------------------------------------------------------------------
+
+def invalidate_props_cache() -> int:
+    """
+    Remove all cached props files so the next fetch hits the API fresh.
+    Returns the number of cache files removed.
+    """
+    import glob
+    pattern = os.path.join(config.CACHE_DIR, "props_*.json")
+    files = glob.glob(pattern)
+    for f in files:
+        os.remove(f)
+    return len(files)

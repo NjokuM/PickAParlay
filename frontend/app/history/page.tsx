@@ -186,7 +186,7 @@ export default function HistoryPage() {
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
                     <span style={{ color: "var(--muted)", fontSize: 13 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
                     <span style={{ color: "var(--accent)", fontSize: 12, marginLeft: "auto" }}>{leg.over_odds?.toFixed(2) ?? "—"}</span>
-                    <span style={{ color: "var(--muted)", fontSize: 11 }}>{leg.is_paddy_power ? "🍀 PP" : leg.bookmaker}</span>
+                    <span style={{ color: "var(--muted)", fontSize: 11 }}>{leg.is_paddy_power ? "🎯 B365" : leg.bookmaker}</span>
                   </div>
                 ))}
               </div>
@@ -228,10 +228,10 @@ export default function HistoryPage() {
                         </div>
                         {[
                           ["Consistency", leg.score_consistency],
+                          ["Opponent Defense", leg.score_opponent_defense],
                           ["vs Opponent", leg.score_vs_opponent],
                           ["Home/Away", leg.score_home_away],
                           ["Injury", leg.score_injury],
-                          ["Team Context", leg.score_team_context],
                           ["Season Avg", leg.score_season_avg],
                           ["Blowout Risk", leg.score_blowout_risk],
                           ["Volume & Usage", leg.score_volume_context],

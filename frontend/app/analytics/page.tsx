@@ -23,8 +23,8 @@ const CARD: React.CSSProperties = {
 };
 
 const FACTOR_ORDER = [
-  "Consistency", "vs Opponent", "Home/Away", "Injury",
-  "Team Context", "Season Avg", "Blowout Risk", "Volume & Usage",
+  "Consistency", "Opponent Defense", "vs Opponent", "Home/Away", "Injury",
+  "Season Avg", "Blowout Risk", "Volume & Usage",
 ];
 
 // ─── Page ─────────────────────────────────────────────────────────────────────

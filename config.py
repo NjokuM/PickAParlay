@@ -39,15 +39,15 @@ ODDS_API_KEY: str = os.getenv("ODDS_API_KEY", "")
 # Factor weights — must sum to 1.0
 # ---------------------------------------------------------------------------
 FACTOR_WEIGHTS: dict[str, float] = {
-    "consistency":      0.38,   # Floor/ceiling + recency-weighted hit rate + mean (last 10 games)
-    "vs_opponent":      0.20,   # Performance vs tonight's specific opponent (H2H)
-    "home_away":        0.12,   # Home/away split matched to tonight's location
-    "injury":           0.12,   # Player health + teammate/opponent injury context (was 0.13)
-    "team_context":     0.05,   # Team pace, recent form, rest (was 0.07)
-    "season_avg":       0.03,   # Current season averages vs the prop line (was 0.04)
-    "blowout_risk":     0.01,   # Spread + H2H margin — risk of early DNP (was 0.02)
-    "line_value":       0.00,   # Retired (absorbed into volume_context)
-    "volume_context":   0.09,   # Minutes trend + FGA/assist-rate, direction-aware (was 0.04)
+    "consistency":       0.30,   # Floor/ceiling + recency-weighted hit rate + mean (+9.7pp signal)
+    "opponent_defense":  0.15,   # Opposing team defensive quality + pace adjustment (+19.7pp signal)
+    "vs_opponent":       0.12,   # Performance vs tonight's specific opponent (H2H) (+2.0pp)
+    "home_away":         0.10,   # Home/away split matched to tonight's location (+7.1pp)
+    "injury":            0.10,   # Player health + teammate/opponent injury context
+    "blowout_risk":      0.10,   # Spread + H2H margin — risk of early DNP (+9.9pp signal)
+    "volume_context":    0.07,   # Minutes trend + FGA/assist-rate, direction-aware
+    "season_avg":        0.06,   # Current season averages vs the prop line (+8.0pp)
+    "line_value":        0.00,   # Retired (absorbed into volume_context)
 }
 
 assert abs(sum(FACTOR_WEIGHTS.values()) - 1.0) < 0.001, "Weights must sum to 1.0"
@@ -62,14 +62,14 @@ RECENCY_WEIGHTS_10: list[float] = [0.20, 0.18, 0.15, 0.12, 0.10, 0.08, 0.06, 0.0
 # Below these thresholds the factor score is blended toward a neutral 50
 # ---------------------------------------------------------------------------
 MIN_SAMPLE: dict[str, int] = {
-    "consistency":  5,
-    "vs_opponent":  4,
-    "home_away":    6,
-    "injury":       1,    # always at least 1 (injury report itself)
-    "team_context": 5,
-    "season_avg":   10,
-    "blowout_risk": 1,
-    "line_value":   1,
+    "consistency":       5,
+    "opponent_defense":  1,    # always available (league-wide team stats)
+    "vs_opponent":       4,
+    "home_away":         6,
+    "injury":            1,    # always at least 1 (injury report itself)
+    "season_avg":        10,
+    "blowout_risk":      1,
+    "line_value":        1,
 }
 
 # ---------------------------------------------------------------------------
@@ -115,21 +115,6 @@ MARKET_MAP: dict[str, dict] = {
         "stat_key": "FG3M",
         "compute":  "FG3M",
         "label":    "3-Pointers Made",
-    },
-    "player_blocks": {
-        "stat_key": "BLK",
-        "compute":  "BLK",
-        "label":    "Blocks",
-    },
-    "player_steals": {
-        "stat_key": "STL",
-        "compute":  "STL",
-        "label":    "Steals",
-    },
-    "player_turnovers": {
-        "stat_key": "TOV",
-        "compute":  "TOV",
-        "label":    "Turnovers",
     },
     "player_points_rebounds_assists": {
         "stat_key": "PRA",
@@ -199,16 +184,28 @@ SUSPICIOUS_HARD_THRESHOLD: float = 0.30    # line > 30% above season avg → fla
 # ---------------------------------------------------------------------------
 ODDS_API_BASE_URL: str = "https://api.the-odds-api.com/v4"
 ODDS_SPORT: str = "basketball_nba"
-ODDS_REGIONS: str = "eu"                    # Paddy Power is EU region
+ODDS_REGIONS: str = "eu"                     # Primary region for core markets (Bet365/PP)
+ODDS_REGIONS_US: str = "us"                  # US-only combo markets (PR, PA, RA)
 ALTERNATE_ODDS_REGIONS: str = "us"          # Alternate lines only offered by US books (FanDuel, DraftKings etc)
+
+# Markets that EU bookmakers (Bet365/PP) cover
+EU_MARKETS: list[str] = [
+    "player_points", "player_assists", "player_rebounds",
+    "player_threes", "player_points_rebounds_assists",
+]
+# Markets only available from US bookmakers (FanDuel, DraftKings, etc.)
+US_ONLY_MARKETS: list[str] = [
+    "player_points_rebounds", "player_points_assists", "player_rebounds_assists",
+]
 ODDS_MARKETS_GAME: str = "h2h,spreads"
-PREFERRED_BOOKMAKER: str = "paddypower"
+PREFERRED_BOOKMAKER: str = "bet365"
+FALLBACK_BOOKMAKER: str = "paddypower"
 
 ESPN_INJURY_URL: str = (
     "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
 )
 
-NBA_API_SLEEP: float = 0.3         # seconds between nba_api calls (was 0.6; NBA limit ~100 req/min)
+NBA_API_SLEEP: float = 0.0         # no delay — 24h cache means most calls are instant hits
 
 # ---------------------------------------------------------------------------
 # Cache TTLs (seconds)
@@ -217,7 +214,9 @@ CACHE_TTL: dict[str, int] = {
     "games":        43200,    # 12 hours
     "game_log":     86400,    # 24 hours (historical, doesn't change intra-day)
     "injuries":     2700,     # 45 minutes
-    "props":        7200,     # 2 hours
+    "props":        7200,     # 2 hours (used for cache key, but smart refresh invalidates before fetching)
+    "events":       28800,    # 8 hours — game list doesn't change intra-day
+    "spreads":      28800,    # 8 hours — spreads barely move, only used for blowout risk (1% weight)
     "team_stats":   86400,    # 24 hours
     "h2h":          86400,    # 24 hours
     "player_team":  43200,    # 12 hours — shorter than game_log so trades are caught same-day
@@ -248,9 +247,6 @@ ALTERNATE_MARKET_MAP: list[str] = [
     "player_assists_alternate",
     "player_rebounds_alternate",
     "player_threes_alternate",
-    "player_blocks_alternate",
-    "player_steals_alternate",
-    "player_turnovers_alternate",
     "player_points_rebounds_assists_alternate",
     "player_points_rebounds_alternate",
     "player_points_assists_alternate",

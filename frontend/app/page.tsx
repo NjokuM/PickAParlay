@@ -9,12 +9,12 @@ import { useSlipBuilder } from "@/lib/slip-builder-context";
 
 const MARKETS = [
   "All Markets", "Points", "Assists", "Rebounds", "Pts+Reb+Ast",
-  "Pts+Reb", "Pts+Ast", "Reb+Ast", "3-Pointers Made", "Blocks", "Steals", "Turnovers",
+  "Pts+Reb", "Pts+Ast", "Reb+Ast", "3-Pointers Made",
 ];
 
 function bookmakerLabel(b: string) {
   const map: Record<string, string> = {
-    paddypower: "Paddy Power", draftkings: "DraftKings",
+    bet365: "Bet365", paddypower: "Paddy Power", draftkings: "DraftKings",
     fanduel: "FanDuel", betmgm: "BetMGM", bovada: "Bovada",
   };
   return map[b] ?? b;
@@ -102,7 +102,11 @@ export default function DashboardPage() {
           )}
         </div>
         <button onClick={handleRefresh} disabled={refreshing} style={{ ...btn(false), color: "var(--accent)", borderColor: "var(--accent)" }}>
-          {refreshing ? `Grading… ${refreshStatus?.props_graded ?? 0}/${refreshStatus?.props_total ?? "?"}` : "↻ Refresh"}
+          {refreshing
+            ? refreshStatus?.status?.startsWith("prefetching")
+              ? `${refreshStatus.status}`
+              : `Grading… ${refreshStatus?.props_graded ?? 0}/${refreshStatus?.props_total ?? "?"}`
+            : "↻ Refresh"}
         </button>
       </div>
 
@@ -200,7 +204,7 @@ export default function DashboardPage() {
                     {p.line}
                   </div>
                   <div style={{ fontSize: 13, color: "var(--accent)" }}>{p.over_odds.toFixed(2)}</div>
-                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{p.is_paddy_power ? "🍀 PP" : p.bookmaker}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{p.is_paddy_power ? "🎯 B365" : bookmakerLabel(p.bookmaker)}</div>
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>{p.game}</div>
                   {p.prop_id ? (
                     <button

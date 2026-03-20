@@ -70,6 +70,7 @@ _refresh_state: dict = {
     "props_total": 0,
     "run_id": None,
     "error": None,
+    "detail": "",  # human-readable detail for terminal + frontend
 }
 _refresh_lock = threading.Lock()
 
@@ -101,10 +102,30 @@ def _run_refresh_background(season: str) -> None:
                 )
             return
 
-        # 2. Injuries
-        injuries = injury_api.get_injury_report()
+        # Note: get_todays_games() already filters out started/finished games
+        # via GAME_STATUS_ID, so no additional filtering needed here.
 
-        # 3. Events + props
+        def _log(msg: str, detail: str = "") -> None:
+            """Print to terminal and update refresh state detail."""
+            print(f"[refresh] {msg}")
+            with _refresh_lock:
+                _refresh_state["detail"] = detail or msg
+
+        _log(f"🏀 Found {len(games)} games tonight")
+
+        # 2. Smart refresh — invalidate props cache so we fetch fresh odds
+        cleared = odds_api.invalidate_props_cache()
+        if cleared:
+            _log(f"🗑️ Cleared {cleared} cached props files — fetching fresh odds")
+
+        # 3. Injuries
+        _log("🏥 Fetching injury report…", "Fetching injury report")
+        injuries = injury_api.get_injury_report()
+        injured_count = sum(len(v) for v in injuries.values()) if isinstance(injuries, dict) else 0
+        _log(f"🏥 Injury report: {injured_count} players listed")
+
+        # 4. Events + props
+        _log("📡 Fetching odds events…", "Fetching odds events")
         events = odds_api.get_events()
         matched_games = 0
         unmatched_games: list[str] = []
@@ -116,22 +137,28 @@ def _run_refresh_background(season: str) -> None:
             else:
                 unmatched_games.append(f"{game.away_team} @ {game.home_team}")
         if unmatched_games:
-            print(f"[refresh] ⚠️ {len(unmatched_games)} games unmatched to Odds API: {unmatched_games}")
-        print(f"[refresh] Matched {matched_games}/{len(games)} games to Odds API events")
+            _log(f"⚠️ {len(unmatched_games)} games unmatched: {', '.join(unmatched_games)}")
+        _log(f"✅ Matched {matched_games}/{len(games)} games to Odds API")
 
         all_raw_props: list = []
-        for game in games:
-            if game.odds_event_id:
-                raw = odds_api.get_player_props_for_event(game.odds_event_id)
-                player_id_map: dict[str, int] = {}
-                for rp in raw:
-                    name = rp["player_name"]
-                    if name not in player_id_map:
-                        pid = nba_stats.get_player_id(name)
-                        if pid:
-                            player_id_map[name] = pid
-                props = odds_api.build_player_props(raw, game, player_id_map)
-                all_raw_props.extend(props)
+        for gi, game in enumerate(games):
+            matchup = f"{game.away_team} @ {game.home_team}"
+            if not game.odds_event_id:
+                _log(f"  ⏭️ [{gi+1}/{len(games)}] {matchup} — no odds event, skipping")
+                continue
+            _log(f"  📥 [{gi+1}/{len(games)}] {matchup} — fetching props…", f"Fetching props: {matchup}")
+            raw = odds_api.get_player_props_for_event(game.odds_event_id, force_fresh=True)
+            player_id_map: dict[str, int] = {}
+            for rp in raw:
+                name = rp["player_name"]
+                if name not in player_id_map:
+                    pid = nba_stats.get_player_id(name)
+                    if pid:
+                        player_id_map[name] = pid
+            props = odds_api.build_player_props(raw, game, player_id_map)
+            unique_players = len({p.player_name for p in props})
+            _log(f"  ✅ [{gi+1}/{len(games)}] {matchup} — {len(props)} props across {unique_players} players")
+            all_raw_props.extend(props)
 
         # Deduplicate raw props (Odds API can return dupes across event IDs)
         seen_props: set[tuple] = set()
@@ -158,20 +185,48 @@ def _run_refresh_background(season: str) -> None:
         # 4a. Pre-warm cache — fetch game logs + current team in parallel
         #     This means grade_prop() will hit cache instantly (no sequential sleeps)
         unique_pids = list({p.nba_player_id for p in all_raw_props if p.nba_player_id})
+        total_players = len(unique_pids)
+        prefetched = 0
+
+        _log(f"⏳ Pre-warming cache for {total_players} players…", f"Prefetching player data (0/{total_players})")
+
+        # Build a reverse map: player_id → player_name for logging
+        _pid_to_name: dict[int, str] = {}
+        for p in all_raw_props:
+            if p.nba_player_id and p.nba_player_id not in _pid_to_name:
+                _pid_to_name[p.nba_player_id] = p.player_name
 
         def _prefetch(pid: int) -> None:
+            nonlocal prefetched
+            name = _pid_to_name.get(pid, f"PID {pid}")
             try:
                 nba_stats.get_player_game_log(pid, season=season)
                 nba_stats.get_player_current_team(pid)
             except Exception:
-                pass
+                print(f"[refresh]   ⚠️ Failed to prefetch {name}")
+            prefetched += 1
+            if prefetched % 10 == 0 or prefetched == total_players:
+                _log(f"  👤 Prefetched {prefetched}/{total_players} players (latest: {name})",
+                     f"Prefetching player data ({prefetched}/{total_players})")
 
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=10) as pool:
             pool.map(_prefetch, unique_pids)
+
+        _log(f"✅ Prefetched {total_players} players — grading {len(all_raw_props)} props")
+        with _refresh_lock:
+            _refresh_state["status"] = "grading"
 
         # 4b. Grade props (both OVER and UNDER sides) — fast now, all cache hits
         all_valued_props: list[ValuedProp] = []
+        _current_player = ""
         for i, prop in enumerate(all_raw_props):
+            # Log when we move to a new player
+            if prop.player_name != _current_player:
+                _current_player = prop.player_name
+                player_props = sum(1 for p in all_raw_props if p.player_name == _current_player)
+                _log(f"  📊 [{i+1}/{len(all_raw_props)}] Grading {_current_player} ({player_props} markets)…",
+                     f"Grading: {_current_player} ({i+1}/{len(all_raw_props)})")
+
             vp_over = prop_grader.grade_prop(prop, injuries, season=season, side="over")
             if vp_over is not None:
                 all_valued_props.append(vp_over)
@@ -202,6 +257,14 @@ def _run_refresh_background(season: str) -> None:
             props_total=len(all_raw_props),
             props_graded=len(all_valued_props),
             props_eligible=above_threshold,
+        )
+
+        elapsed = (datetime.utcnow() - datetime.fromisoformat(_refresh_state["started_at"])).total_seconds()
+        _log(
+            f"🏁 Done! {len(all_valued_props)} graded props "
+            f"({above_threshold} above threshold) from {len(games)} games "
+            f"in {elapsed:.1f}s",
+            "done",
         )
 
         with _refresh_lock:
@@ -397,14 +460,15 @@ def get_props(
         if player and player.lower() not in vp.prop.player_name.lower():
             continue
         if bookmaker:
-            if bookmaker.lower() == "paddypower":
+            if bookmaker.lower() in ("bet365", "paddypower"):
                 if not vp.prop.is_paddy_power:
                     continue
             elif vp.prop.bookmaker != bookmaker:
                 continue
         if market:
             ml = config.get_market_label(vp.prop.market)
-            if market.lower() not in ml.lower():
+            # URLSearchParams encodes "+" as space; normalise both sides
+            if market.replace(" ", "+").lower() != ml.replace(" ", "+").lower():
                 continue
         if side and vp.backing_data.get("side", "over") != side.lower():
             continue
@@ -419,15 +483,15 @@ def get_bookmakers() -> list[str]:
     """Distinct bookmakers present in today's cached props."""
     vps = _load_valued_props()
     books: set[str] = set()
-    has_pp = False
+    has_preferred = False
     for vp in vps:
         if vp.prop.bookmaker:
             books.add(vp.prop.bookmaker)
         if vp.prop.is_paddy_power:
-            has_pp = True
+            has_preferred = True
     result = sorted(books)
-    if has_pp and "paddypower" not in result:
-        result = ["paddypower"] + result
+    if has_preferred and config.PREFERRED_BOOKMAKER not in result:
+        result = [config.PREFERRED_BOOKMAKER] + result
     return result
 
 
@@ -858,6 +922,8 @@ def _run_alt_refresh_background(season: str) -> None:
             with _alt_refresh_lock:
                 _alt_refresh_state.update(running=False, finished_at=datetime.utcnow().isoformat(), status="no_games")
             return
+
+        # Note: get_todays_games() already filters out started/finished games.
 
         injuries = injury_api.get_injury_report()
         events = odds_api.get_events()

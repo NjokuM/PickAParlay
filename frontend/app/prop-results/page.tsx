@@ -19,7 +19,7 @@ function today(): string {
 
 function bookmakerLabel(b: string) {
   const m: Record<string, string> = {
-    paddypower: "Paddy Power", draftkings: "DraftKings",
+    bet365: "Bet365", paddypower: "Paddy Power", draftkings: "DraftKings",
     fanduel: "FanDuel", betmgm: "BetMGM",
   };
   return m[b] ?? b;
@@ -98,7 +98,6 @@ function PctBar({ pct, hits, total }: { pct: number; hits: number; total: number
 
 const MARKETS = [
   "", "Points", "Assists", "Rebounds", "3-Pointers Made",
-  "Blocks", "Steals", "Turnovers",
   "Pts+Reb+Ast", "Pts+Reb", "Pts+Ast", "Reb+Ast",
 ];
 
@@ -448,7 +447,7 @@ export default function PropResultsPage() {
               )}
               <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.decimal_odds?.toFixed(2) ?? "—"}</span>
               <span style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {r.matchup ?? (r.is_paddy_power ? "🍀 PP" : bookmakerLabel(r.bookmaker))}
+                {r.matchup ?? (r.is_paddy_power ? "🎯 B365" : bookmakerLabel(r.bookmaker))}
               </span>
             </div>
           ))}

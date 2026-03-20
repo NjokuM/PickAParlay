@@ -8,7 +8,7 @@ import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { useSlipBuilder } from "@/lib/slip-builder-context";
 
 function bookmakerLabel(b: string) {
-  const m: Record<string, string> = { paddypower: "Paddy Power", draftkings: "DraftKings", fanduel: "FanDuel", betmgm: "BetMGM" };
+  const m: Record<string, string> = { bet365: "Bet365", paddypower: "Paddy Power", draftkings: "DraftKings", fanduel: "FanDuel", betmgm: "BetMGM" };
   return m[b] ?? b;
 }
 
@@ -362,7 +362,7 @@ export default function LadderPage() {
                     <span style={{ fontSize: 12, color: p.side === "over" ? "var(--green)" : "var(--red)" }}>{(p.side ?? "over").toUpperCase()}</span>
                     <span style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>{(p.decimal_odds ?? 0).toFixed(2)}</span>
                     <span style={{ fontSize: 11, color: scoreColor(p.value_score) }}>{p.recommendation?.replace(" Value", "")}</span>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{p.is_paddy_power ? "🍀 PP" : bookmakerLabel(p.bookmaker)}</span>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{p.is_paddy_power ? "🎯 B365" : bookmakerLabel(p.bookmaker)}</span>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -398,14 +398,14 @@ export default function LadderPage() {
                     <div style={{ padding: "12px 16px", background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
                       <FactorGrid factors={
                         ([
-                          ["Consistency",    p.score_consistency,    0.38],
-                          ["vs Opponent",    p.score_vs_opponent,    0.20],
-                          ["Home/Away",      p.score_home_away,      0.12],
-                          ["Injury Context", p.score_injury,         0.12],
-                          ["Team Context",   p.score_team_context,   0.05],
-                          ["Season Average", p.score_season_avg,     0.03],
-                          ["Blowout Risk",   p.score_blowout_risk,   0.01],
-                          ["Volume & Usage", p.score_volume_context, 0.09],
+                          ["Consistency",       p.score_consistency,       0.30],
+                          ["Opponent Defense",  p.score_opponent_defense,  0.15],
+                          ["vs Opponent",       p.score_vs_opponent,       0.12],
+                          ["Home/Away",         p.score_home_away,         0.10],
+                          ["Injury Context",    p.score_injury,            0.10],
+                          ["Season Average",    p.score_season_avg,        0.06],
+                          ["Blowout Risk",      p.score_blowout_risk,      0.10],
+                          ["Volume & Usage",    p.score_volume_context,    0.07],
                         ] as [string, number | null, number][])
                           .filter(([, val]) => val != null)
                           .map(([name, score, weight]) => ({ name, score: score!, weight }))
@@ -477,7 +477,7 @@ function SlipCard({
             </div>
             <div style={{ color: "var(--accent)", fontSize: 13 }}>{leg.over_odds.toFixed(2)}</div>
             <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>
-              {leg.is_paddy_power ? "🍀 PP" : bookmakerLabel(leg.bookmaker)}
+              {leg.is_paddy_power ? "🎯 B365" : bookmakerLabel(leg.bookmaker)}
             </div>
             <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>
           </div>

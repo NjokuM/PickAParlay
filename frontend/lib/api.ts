@@ -104,6 +104,7 @@ export interface SavedLeg {
   side: string | null;        // "over" | "under" | null (rows saved before Phase 5)
   game_date: string | null;   // "YYYY-MM-DD" | null (rows saved before Phase 5)
   score_consistency: number | null;
+  score_opponent_defense: number | null;
   score_vs_opponent: number | null;
   score_home_away: number | null;
   score_injury: number | null;
@@ -213,6 +214,7 @@ export interface PropResult {
   graded_at: string | null;
   result_at: string | null;
   score_consistency: number | null;
+  score_opponent_defense: number | null;
   score_vs_opponent: number | null;
   score_home_away: number | null;
   score_injury: number | null;
