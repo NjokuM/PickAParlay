@@ -358,7 +358,7 @@ export default function LadderPage() {
                     <span style={{ fontSize: 12, color: p.side === "over" ? "var(--green)" : "var(--red)" }}>{(p.side ?? "over").toUpperCase()}</span>
                     <span style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>{(p.decimal_odds ?? 0).toFixed(2)}</span>
                     <span style={{ fontSize: 11, color: scoreColor(p.value_score) }}>{p.recommendation?.replace(" Value", "")}</span>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{p.is_paddy_power ? "🎯 B365" : bookmakerLabel(p.bookmaker)}</span>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{bookmakerLabel(p.bookmaker)}</span>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -473,7 +473,7 @@ function SlipCard({
             </div>
             <div style={{ color: "var(--accent)", fontSize: 13 }}>{leg.over_odds.toFixed(2)}</div>
             <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>
-              {leg.is_paddy_power ? "🎯 B365" : bookmakerLabel(leg.bookmaker)}
+              {bookmakerLabel(leg.bookmaker)}
             </div>
             <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>
           </div>

@@ -198,7 +198,7 @@ export default function DashboardPage() {
                     {p.line}
                   </div>
                   <div style={{ fontSize: 13, color: "var(--accent)" }}>{p.over_odds.toFixed(2)}</div>
-                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{p.is_paddy_power ? "🎯 B365" : bookmakerLabel(p.bookmaker)}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{bookmakerLabel(p.bookmaker)}</div>
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>{p.game}</div>
                   {p.prop_id ? (
                     <button

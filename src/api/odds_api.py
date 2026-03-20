@@ -382,13 +382,11 @@ def get_player_props_for_event(
 def _extract_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:
     """
     Extract player props from bookmakers list.
-    Priority chain: Bet365 → Paddy Power → best available odds.
-    Returns one entry per (player, market) — using the highest-priority bookmaker.
+    Returns one entry per (player, market) — picks the best available odds.
+    When multiple bookmakers offer the same prop, keeps the one with the
+    highest over odds (best value for the bettor).
     """
-    preferred = config.PREFERRED_BOOKMAKER
-    fallback = config.FALLBACK_BOOKMAKER
-
-    # Index: (player_name, market) → per-bookmaker odds
+    # Index: (player_name, market) → best odds seen so far
     index: dict[tuple[str, str], dict] = {}
 
     for bm in bookmakers:
@@ -426,86 +424,31 @@ def _extract_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:
             for (player, _pt), od in line_outcomes.items():
                 if od["over"] is None or od["under"] is None:
                     continue
-                # Score by how balanced the odds are (closest to even = primary)
                 balance = abs(od["over"] - od["under"])
                 if player not in player_outcomes or balance < player_outcomes[player]["_balance"]:
                     player_outcomes[player] = {**od, "_balance": balance}
 
-            # Strip internal key before downstream use
             for od in player_outcomes.values():
                 od.pop("_balance", None)
 
             for player, odds_data in player_outcomes.items():
                 key = (player, mkt)
-                if key not in index:
+                over = odds_data["over"] or 0.0
+                under = odds_data["under"] or 0.0
+
+                # Keep whichever bookmaker offers the best over odds
+                if key not in index or over > index[key]["over_odds"]:
                     index[key] = {
-                        "player_name": player,
-                        "market": mkt,
-                        "line": odds_data["line"],
-                        "pref_over": 0.0,    # preferred bookmaker (Bet365)
-                        "pref_under": 0.0,
-                        "fb_over": 0.0,      # fallback bookmaker (Paddy Power)
-                        "fb_under": 0.0,
-                        "best_over": 0.0,
-                        "best_under": 0.0,
-                        "best_bookie": "",
+                        "player_name":    player,
+                        "market":         mkt,
+                        "line":           float(odds_data["line"]),
+                        "over_odds":      over,
+                        "under_odds":     under,
+                        "bookmaker":      bm_key,
+                        "is_paddy_power": False,
                     }
 
-                if bm_key == preferred:
-                    index[key]["pref_over"]  = odds_data["over"] or 0.0
-                    index[key]["pref_under"] = odds_data["under"] or 0.0
-                    if odds_data["line"] is not None:
-                        index[key]["line"] = odds_data["line"]
-                elif bm_key == fallback:
-                    index[key]["fb_over"]  = odds_data["over"] or 0.0
-                    index[key]["fb_under"] = odds_data["under"] or 0.0
-                    if odds_data["line"] is not None and index[key]["line"] is None:
-                        index[key]["line"] = odds_data["line"]
-
-                over = odds_data["over"] or 0.0
-                if over > index[key]["best_over"]:
-                    index[key]["best_over"]   = over
-                    index[key]["best_bookie"] = bm_key
-                    if odds_data["line"] is not None and index[key]["line"] is None:
-                        index[key]["line"] = odds_data["line"]
-
-                under = odds_data["under"] or 0.0
-                if under > index[key]["best_under"]:
-                    index[key]["best_under"] = under
-
-    # Flatten: Bet365 → Paddy Power → best available
-    results = []
-    for (player, mkt), d in index.items():
-        if d["line"] is None:
-            continue
-
-        if d["pref_over"] > 0.0:
-            over_odds = d["pref_over"]
-            under_odds = d["pref_under"]
-            bookie = preferred
-            is_preferred = True
-        elif d["fb_over"] > 0.0:
-            over_odds = d["fb_over"]
-            under_odds = d["fb_under"]
-            bookie = fallback
-            is_preferred = True
-        else:
-            over_odds = d["best_over"]
-            under_odds = d["best_under"]
-            bookie = d["best_bookie"]
-            is_preferred = False
-
-        results.append({
-            "player_name":      player,
-            "market":           mkt,
-            "line":             float(d["line"]),
-            "over_odds":        over_odds,
-            "under_odds":       under_odds,
-            "bookmaker":        bookie,
-            "is_paddy_power":   is_preferred,  # repurposed: True = from preferred or fallback bookie
-        })
-
-    return results
+    return [d for d in index.values() if d["line"] is not None]
 
 
 # ---------------------------------------------------------------------------

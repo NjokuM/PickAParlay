@@ -178,7 +178,7 @@ export default function SlipsPage() {
                     <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 13 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
                   </div>
                   <div style={{ color: "var(--accent)", fontSize: 13 }}>{leg.over_odds.toFixed(2)}</div>
-                  <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>{leg.is_paddy_power ? "🎯 B365" : bookmakerLabel(leg.bookmaker)}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>{bookmakerLabel(leg.bookmaker)}</div>
                   <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>
                 </div>
               ))}

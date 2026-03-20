@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ResultsStatus, SavedSlip } from "@/lib/api";
 import { OutcomeBadge, LegResultBadge, ScoreBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
+import { bookmakerLabel } from "@/lib/bookmakers";
 
 /** Return yesterday's date as "YYYY-MM-DD" in local time. */
 function yesterday(): string {
@@ -186,7 +187,7 @@ export default function HistoryPage() {
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
                     <span style={{ color: "var(--muted)", fontSize: 13 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
                     <span style={{ color: "var(--accent)", fontSize: 12, marginLeft: "auto" }}>{leg.over_odds?.toFixed(2) ?? "—"}</span>
-                    <span style={{ color: "var(--muted)", fontSize: 11 }}>{leg.is_paddy_power ? "🎯 B365" : leg.bookmaker}</span>
+                    <span style={{ color: "var(--muted)", fontSize: 11 }}>{bookmakerLabel(leg.bookmaker)}</span>
                   </div>
                 ))}
               </div>

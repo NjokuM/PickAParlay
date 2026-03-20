@@ -440,7 +440,7 @@ export default function PropResultsPage() {
               )}
               <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.decimal_odds?.toFixed(2) ?? "—"}</span>
               <span style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {r.matchup ?? (r.is_paddy_power ? "🎯 B365" : bookmakerLabel(r.bookmaker))}
+                {r.matchup ?? bookmakerLabel(r.bookmaker)}
               </span>
             </div>
           ))}

@@ -460,10 +460,7 @@ def get_props(
         if player and player.lower() not in vp.prop.player_name.lower():
             continue
         if bookmaker:
-            if bookmaker.lower() in ("bet365", "paddypower"):
-                if not vp.prop.is_paddy_power:
-                    continue
-            elif vp.prop.bookmaker != bookmaker:
+            if vp.prop.bookmaker != bookmaker:
                 continue
         if market:
             ml = config.get_market_label(vp.prop.market)
@@ -487,12 +484,7 @@ def get_bookmakers() -> list[str]:
     for vp in vps:
         if vp.prop.bookmaker:
             books.add(vp.prop.bookmaker)
-        if vp.prop.is_paddy_power:
-            has_preferred = True
-    result = sorted(books)
-    if has_preferred and config.PREFERRED_BOOKMAKER not in result:
-        result = [config.PREFERRED_BOOKMAKER] + result
-    return result
+    return sorted(books)
 
 
 @app.post("/api/refresh")
