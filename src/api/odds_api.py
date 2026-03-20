@@ -362,12 +362,14 @@ def get_player_props_for_event(
             results.extend(_extract_props(data.get("bookmakers", []), eu_markets))
 
     # Call 2: US region — combo markets (PR, PA, RA) not offered by EU books
+    # Restrict to clean single-line bookmakers (exclude Bovada multi-line)
     if us_markets:
         data = _get(
             f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
             {
                 "regions": config.ODDS_REGIONS_US,
                 "markets": ",".join(us_markets),
+                "bookmakers": config.US_COMBO_BOOKMAKERS,
             },
         )
         if data:

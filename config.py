@@ -193,10 +193,12 @@ EU_MARKETS: list[str] = [
     "player_points", "player_assists", "player_rebounds",
     "player_threes", "player_points_rebounds_assists",
 ]
-# Markets only available from US bookmakers (FanDuel, DraftKings, etc.)
+# Markets only available from US bookmakers — use clean single-line books
+# (Bovada sends 3 lines per player causing odds mismatches)
 US_ONLY_MARKETS: list[str] = [
     "player_points_rebounds", "player_points_assists", "player_rebounds_assists",
 ]
+US_COMBO_BOOKMAKERS: str = "fanduel,draftkings,betmgm"
 ODDS_MARKETS_GAME: str = "h2h,spreads"
 PREFERRED_BOOKMAKER: str = "bet365"
 FALLBACK_BOOKMAKER: str = "paddypower"
