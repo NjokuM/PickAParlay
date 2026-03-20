@@ -6,11 +6,7 @@ import { FactorGrid } from "@/components/FactorBar";
 import { ScoreBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { useSlipBuilder } from "@/lib/slip-builder-context";
-
-function bookmakerLabel(b: string) {
-  const m: Record<string, string> = { bet365: "Bet365", paddypower: "Paddy Power", draftkings: "DraftKings", fanduel: "FanDuel", betmgm: "BetMGM" };
-  return m[b] ?? b;
-}
+import { bookmakerLabel } from "@/lib/bookmakers";
 
 const btn = (active?: boolean): React.CSSProperties => ({
   padding: "6px 14px", borderRadius: 6, border: "1px solid var(--border)",

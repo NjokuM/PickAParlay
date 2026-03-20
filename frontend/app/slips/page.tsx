@@ -5,11 +5,7 @@ import { api, Slip } from "@/lib/api";
 import { FactorGrid } from "@/components/FactorBar";
 import { ScoreBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
-
-function bookmakerLabel(b: string) {
-  const m: Record<string, string> = { bet365: "Bet365", paddypower: "Paddy Power", draftkings: "DraftKings", fanduel: "FanDuel", betmgm: "BetMGM" };
-  return m[b] ?? b;
-}
+import { bookmakerLabel } from "@/lib/bookmakers";
 
 export default function SlipsPage() {
   const [odds, setOdds]         = useState("");            // empty = best-value mode

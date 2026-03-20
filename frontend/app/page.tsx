@@ -6,19 +6,13 @@ import { FactorGrid } from "@/components/FactorBar";
 import { ScoreBadge, RecoBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { useSlipBuilder } from "@/lib/slip-builder-context";
+import { bookmakerLabel } from "@/lib/bookmakers";
 
 const MARKETS = [
   "All Markets", "Points", "Assists", "Rebounds", "Pts+Reb+Ast",
   "Pts+Reb", "Pts+Ast", "Reb+Ast", "3-Pointers Made",
 ];
 
-function bookmakerLabel(b: string) {
-  const map: Record<string, string> = {
-    bet365: "Bet365", paddypower: "Paddy Power", draftkings: "DraftKings",
-    fanduel: "FanDuel", betmgm: "BetMGM", bovada: "Bovada",
-  };
-  return map[b] ?? b;
-}
 
 interface Filters {
   minScore: number; game: string; player: string; bookmaker: string; market: string; side: "" | "over" | "under";

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, PropResult, ResultsStatus } from "@/lib/api";
 import { ScoreBadge, LegResultBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
+import { bookmakerLabel } from "@/lib/bookmakers";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -15,14 +16,6 @@ function nDaysAgo(n: number): string {
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-function bookmakerLabel(b: string) {
-  const m: Record<string, string> = {
-    bet365: "Bet365", paddypower: "Paddy Power", draftkings: "DraftKings",
-    fanduel: "FanDuel", betmgm: "BetMGM",
-  };
-  return m[b] ?? b;
 }
 
 // ─── Summary computations ─────────────────────────────────────────────────────
