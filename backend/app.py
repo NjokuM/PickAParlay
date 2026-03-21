@@ -275,18 +275,16 @@ def _run_refresh_background(season: str) -> None:
             with _refresh_lock:
                 _refresh_state["props_graded"] = i + 1
 
-            # Incremental save — persist every BATCH_SIZE props to DB + cache
+            # Incremental save — persist every BATCH_SIZE props to DB
             if len(_unsaved_batch) >= BATCH_SIZE and game_date:
                 database.upsert_graded_props(_unsaved_batch, game_date)
-                # Update cache file so /api/props serves partial results live
-                cache.save_scored_props([dataclasses.asdict(vp) for vp in all_valued_props])
                 _unsaved_batch = []
 
-        # Save any remaining props
+        # Save remaining props to DB
         if _unsaved_batch and game_date:
             database.upsert_graded_props(_unsaved_batch, game_date)
 
-        # 5. Final cache save with all props
+        # 5. Single cache save at the end
         prop_dicts = [dataclasses.asdict(vp) for vp in all_valued_props]
         cache.save_scored_props(prop_dicts)
 

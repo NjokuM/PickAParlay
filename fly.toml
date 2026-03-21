@@ -26,4 +26,4 @@ primary_region = 'lhr'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '1024mb'
+  memory = '2048mb'
