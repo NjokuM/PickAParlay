@@ -274,27 +274,15 @@ def get_game_spread(event_id: str) -> float | None:
     if cached is not None:
         return float(cached)
 
-    # Try preferred bookmaker first
+    # Single call — any bookmaker in the EU region (1 credit)
     data = _get(
         f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
         {
-            "regions": config.ODDS_REGIONS,
+            "regions": "eu",
             "markets": "spreads",
-            "bookmakers": config.PREFERRED_BOOKMAKER,
         },
     )
     spread = _extract_spread(data.get("bookmakers", [])) if data else None
-
-    # Fallback: any bookmaker in the EU region (no US — saves credits)
-    if spread is None:
-        data = _get(
-            f"/sports/{config.ODDS_SPORT}/events/{event_id}/odds",
-            {
-                "regions": config.ODDS_REGIONS,
-                "markets": "spreads",
-            },
-        )
-        spread = _extract_spread(data.get("bookmakers", [])) if data else None
 
     if spread is not None:
         cache_set(cache_key, spread)
