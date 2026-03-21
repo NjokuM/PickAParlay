@@ -20,7 +20,7 @@ from typing import Optional
 # Ensure the project root is on sys.path so all src/ imports work
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -30,13 +30,18 @@ import src.database as database
 from src.api import injury_api, nba_stats, odds_api
 from src.analysis import bet_builder, prop_grader, results_checker
 from src.models import BetLeg, BetSlip, FactorResult, NBAGame, PlayerProp, ValuedProp
+from backend.auth import require_admin, require_user, router as auth_router
 
 app = FastAPI(title="PickAParlay API", version="1.0.0")
 
+# Register auth endpoints
+app.include_router(auth_router)
+
 # Allow the Next.js dev server and any local origin
+_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[o.strip() for o in _cors_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -488,7 +493,7 @@ def get_bookmakers() -> list[str]:
 
 
 @app.post("/api/refresh")
-def trigger_refresh(season: str = config.DEFAULT_SEASON) -> dict:
+def trigger_refresh(season: str = config.DEFAULT_SEASON, _admin: dict = Depends(require_admin)) -> dict:
     """Kick off the full fetch + grade pipeline in a background thread."""
     with _refresh_lock:
         if _refresh_state["running"]:
@@ -552,7 +557,7 @@ class SaveSlipRequest(BaseModel):
 
 
 @app.post("/api/slips/save")
-def save_slip_endpoint(req: SaveSlipRequest) -> dict:
+def save_slip_endpoint(req: SaveSlipRequest, user: dict = Depends(require_user)) -> dict:
     """Re-build slips and save the chosen one to the database."""
     if not cache.load_scored_props_raw():
         raise HTTPException(status_code=404, detail="No cached props.")
@@ -587,6 +592,7 @@ def save_slip_endpoint(req: SaveSlipRequest) -> dict:
         target_odds_str=req.odds or "Best Value",
         run_id=run_id,
         bookmaker_filter=req.bookmaker,
+        user_id=user["id"],
     )
     return {"slip_id": slip_id, "saved": True}
 
@@ -600,7 +606,7 @@ class CustomSlipRequest(BaseModel):
 
 
 @app.post("/api/slips/custom")
-def save_custom_slip(req: CustomSlipRequest) -> dict:
+def save_custom_slip(req: CustomSlipRequest, user: dict = Depends(require_user)) -> dict:
     """Save a user-assembled custom slip from graded_props IDs."""
     if not req.leg_ids:
         raise HTTPException(status_code=400, detail="No legs provided.")
@@ -677,14 +683,15 @@ def save_custom_slip(req: CustomSlipRequest) -> dict:
         slip=slip,
         target_odds_str="Custom",
         run_id=run_id,
+        user_id=user["id"],
     )
     return {"slip_id": slip_id, "saved": True, "combined_odds": round(combined_odds, 3)}
 
 
 @app.get("/api/history")
-def get_history(limit: int = Query(default=20)) -> list[dict]:
-    """Saved slips with nested legs, newest first."""
-    return database.get_history(limit=limit)
+def get_history(limit: int = Query(default=20), user: dict = Depends(require_user)) -> list[dict]:
+    """Saved slips with nested legs, newest first. Filtered to current user."""
+    return database.get_history(limit=limit, user_id=user["id"])
 
 
 class OutcomeRequest(BaseModel):
@@ -694,7 +701,7 @@ class OutcomeRequest(BaseModel):
 
 
 @app.patch("/api/history/{slip_id}/outcome")
-def record_outcome_endpoint(slip_id: int, req: OutcomeRequest) -> dict:
+def record_outcome_endpoint(slip_id: int, req: OutcomeRequest, user: dict = Depends(require_user)) -> dict:
     """Record WIN / LOSS / VOID for a slip (and optionally HIT/MISS per leg)."""
     if req.outcome not in ("WIN", "LOSS", "VOID"):
         raise HTTPException(
@@ -1149,7 +1156,7 @@ def _run_ladder_build_background(season: str) -> None:
 # --- Alt Lines Refresh endpoints ---
 
 @app.post("/api/alt-refresh")
-def trigger_alt_refresh(season: str = config.DEFAULT_SEASON) -> dict:
+def trigger_alt_refresh(season: str = config.DEFAULT_SEASON, _admin: dict = Depends(require_admin)) -> dict:
     """Fetch and grade alt lines from the Odds API."""
     with _alt_refresh_lock:
         if _alt_refresh_state["running"]:

@@ -177,6 +177,24 @@ def init_db() -> None:
                 ON graded_props(game_date);
         """)
 
+        # Users table — for auth & multi-user support
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY,
+                username      TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                display_name  TEXT,
+                is_admin      INTEGER DEFAULT 0,
+                created_at    TEXT NOT NULL
+            )
+        """)
+
+        # Migration: add user_id to saved_slips for per-user history
+        try:
+            conn.execute("ALTER TABLE saved_slips ADD COLUMN user_id INTEGER REFERENCES users(id)")
+        except Exception:
+            pass
+
         # Migration: add score_volume_context for databases created before this column existed
         try:
             conn.execute("ALTER TABLE slip_legs ADD COLUMN score_volume_context REAL")
@@ -293,6 +311,7 @@ def save_slip(
     target_odds_str: str,
     run_id: int | None = None,
     bookmaker_filter: str | None = None,
+    user_id: int | None = None,
 ) -> int:
     """
     Persist a BetSlip and all its legs to the database.
@@ -302,8 +321,8 @@ def save_slip(
         cur = conn.execute(
             """INSERT INTO saved_slips
                (run_id, saved_at, target_odds_str, target_decimal,
-                combined_odds, avg_value_score, has_correlated, bookmaker_filter)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                combined_odds, avg_value_score, has_correlated, bookmaker_filter, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 run_id,
                 datetime.utcnow().isoformat(),
@@ -313,6 +332,7 @@ def save_slip(
                 slip.total_value_score,
                 int(slip.has_correlated_legs),
                 bookmaker_filter,
+                user_id,
             ),
         )
         slip_id = cur.lastrowid
@@ -362,13 +382,20 @@ def save_slip(
 # History
 # ---------------------------------------------------------------------------
 
-def get_history(limit: int = 20) -> list[dict]:
-    """Return saved slips (newest first) with their legs nested in."""
+def get_history(limit: int = 20, user_id: int | None = None) -> list[dict]:
+    """Return saved slips (newest first) with their legs nested in.
+    If user_id is provided, only return slips belonging to that user."""
     with _connect() as conn:
-        slips = conn.execute(
-            "SELECT * FROM saved_slips ORDER BY saved_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        if user_id is not None:
+            slips = conn.execute(
+                "SELECT * FROM saved_slips WHERE user_id = ? ORDER BY saved_at DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+        else:
+            slips = conn.execute(
+                "SELECT * FROM saved_slips ORDER BY saved_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
 
         result = []
         for slip in slips:
@@ -949,3 +976,49 @@ def auto_resolve_slip_outcome(slip_id: int) -> str | None:
     # record_outcome opens its own connection — call outside the `with` block
     record_outcome(slip_id, outcome)
     return outcome
+
+
+# ---------------------------------------------------------------------------
+# User management
+# ---------------------------------------------------------------------------
+
+def create_user(
+    username: str,
+    password_hash: str,
+    display_name: str | None = None,
+    is_admin: bool = False,
+) -> int:
+    """Create a new user and return their ID."""
+    from datetime import datetime, timezone
+
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO users (username, password_hash, display_name, is_admin, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (username, password_hash, display_name, int(is_admin),
+             datetime.now(timezone.utc).isoformat()),
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def get_user_by_id(user_id: int) -> dict | None:
+    """Fetch a user by ID."""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_username(username: str) -> dict | None:
+    """Fetch a user by username (case-insensitive)."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE username = ?", (username.lower(),)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_count() -> int:
+    """Return total number of registered users."""
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()
+        return row["cnt"] if row else 0

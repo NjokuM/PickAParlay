@@ -7,6 +7,7 @@ import { ScoreBadge, RecoBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { useSlipBuilder } from "@/lib/slip-builder-context";
 import { bookmakerLabel } from "@/lib/bookmakers";
+import { isAdmin } from "@/lib/auth";
 
 const MARKETS = [
   "All Markets", "Points", "Assists", "Rebounds", "Pts+Reb+Ast",
@@ -95,13 +96,15 @@ export default function DashboardPage() {
             </p>
           )}
         </div>
-        <button onClick={handleRefresh} disabled={refreshing} style={{ ...btn(false), color: "var(--accent)", borderColor: "var(--accent)" }}>
-          {refreshing
-            ? refreshStatus?.status?.startsWith("prefetching")
-              ? `${refreshStatus.status}`
-              : `Grading… ${refreshStatus?.props_graded ?? 0}/${refreshStatus?.props_total ?? "?"}`
-            : "↻ Refresh"}
-        </button>
+        {isAdmin() && (
+          <button onClick={handleRefresh} disabled={refreshing} style={{ ...btn(false), color: "var(--accent)", borderColor: "var(--accent)" }}>
+            {refreshing
+              ? refreshStatus?.status?.startsWith("prefetching")
+                ? `${refreshStatus.status}`
+                : `Grading… ${refreshStatus?.props_graded ?? 0}/${refreshStatus?.props_total ?? "?"}`
+              : "↻ Refresh"}
+          </button>
+        )}
       </div>
 
       {error && (

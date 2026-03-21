@@ -2,29 +2,72 @@
 
 import "./globals.css";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api, Credits } from "@/lib/api";
 import { SlipBuilderProvider } from "@/lib/slip-builder-context";
 import SlipBuilderPanel from "@/components/SlipBuilderPanel";
+import { getUser, isLoggedIn, clearAuth, isAdmin, AuthUser } from "@/lib/auth";
 
 const NAV = [
-  { href: "/",          label: "Tonight",   icon: "🏀" },
-  { href: "/slips",     label: "Slips",     icon: "🎯" },
-  { href: "/ladder",    label: "Ladder",    icon: "🪜" },
-  { href: "/history",      label: "History",      icon: "📋" },
-  { href: "/prop-results", label: "Prop Results", icon: "📊" },
-  { href: "/analytics",    label: "Analytics",    icon: "📈" },
+  { href: "/",          label: "Tonight",   icon: "\u{1F3C0}" },
+  { href: "/slips",     label: "Slips",     icon: "\u{1F3AF}" },
+  { href: "/ladder",    label: "Ladder",    icon: "\u{1FA9C}" },
+  { href: "/history",      label: "History",      icon: "\u{1F4CB}" },
+  { href: "/prop-results", label: "Prop Results", icon: "\u{1F4CA}" },
+  { href: "/analytics",    label: "Analytics",    icon: "\u{1F4C8}" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [credits, setCredits] = useState<Credits | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
 
+  // Check auth on mount
   useEffect(() => {
+    if (pathname === "/login") {
+      setAuthChecked(true);
+      return;
+    }
+    if (!isLoggedIn()) {
+      router.push("/login");
+      return;
+    }
+    setUser(getUser());
+    setAuthChecked(true);
     api.credits().then(setCredits).catch(() => {});
-  }, []);
+  }, [pathname, router]);
+
+  // Login page gets its own layout (no sidebar)
+  if (pathname === "/login") {
+    return (
+      <html lang="en">
+        <head>
+          <title>PickAParlay - Login</title>
+          <meta name="description" content="NBA Bet Builder" />
+        </head>
+        <body style={{ margin: 0 }}>{children}</body>
+      </html>
+    );
+  }
+
+  // Don't render anything until auth is checked (prevents flash)
+  if (!authChecked) {
+    return (
+      <html lang="en">
+        <head><title>PickAParlay</title></head>
+        <body style={{ margin: 0, background: "#0d1117" }} />
+      </html>
+    );
+  }
+
+  function handleLogout() {
+    clearAuth();
+    router.push("/login");
+  }
 
   return (
     <html lang="en">
@@ -34,7 +77,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body style={{ margin: 0 }}>
         <div style={{ display: "flex", minHeight: "100vh" }}>
-          {/* ── Sidebar ── */}
+          {/* Sidebar */}
           <aside style={{
             width: 200,
             background: "var(--surface)",
@@ -53,7 +96,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 PickAParlay
               </div>
               <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
-                NBA Bet Builder
+                NBA Prop Analytics
               </div>
             </div>
 
@@ -85,8 +128,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               })}
             </nav>
 
-            {/* Credits */}
-            {credits && (
+            {/* Credits (admin only) */}
+            {credits && user?.is_admin && (
               <div style={{
                 padding: "12px 16px",
                 borderTop: "1px solid var(--border)",
@@ -114,9 +157,45 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </div>
               </div>
             )}
+
+            {/* User section */}
+            {user && (
+              <div style={{
+                padding: "12px 16px",
+                borderTop: "1px solid var(--border)",
+                fontSize: 12,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ color: "var(--text)", fontWeight: 600 }}>
+                      {user.display_name || user.username}
+                    </div>
+                    {user.is_admin && (
+                      <span style={{
+                        fontSize: 10, color: "var(--accent)", fontWeight: 700,
+                        background: "rgba(88, 166, 255, 0.1)",
+                        padding: "1px 6px", borderRadius: 4, marginTop: 2, display: "inline-block",
+                      }}>
+                        ADMIN
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    style={{
+                      background: "none", border: "none", color: "var(--muted)",
+                      cursor: "pointer", fontSize: 12, padding: "4px 8px",
+                    }}
+                    title="Sign out"
+                  >
+                    Logout
+                  </button>
+                </div>
+              </div>
+            )}
           </aside>
 
-          {/* ── Main ── */}
+          {/* Main */}
           <SlipBuilderProvider>
             <main style={{ flex: 1, overflow: "auto", padding: "24px 28px" }}>
               {children}

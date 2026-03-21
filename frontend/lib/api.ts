@@ -1,7 +1,25 @@
+import { getToken, clearAuth } from "./auth";
+
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function handle401(res: Response): void {
+  if (res.status === 401 && typeof window !== "undefined") {
+    clearAuth();
+    window.location.href = "/login";
+  }
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { cache: "no-store" });
+  const res = await fetch(`${BASE}${path}`, {
+    cache: "no-store",
+    headers: { ...authHeaders() },
+  });
+  handle401(res);
   if (!res.ok) throw new Error(`API ${path} → ${res.status}`);
   return res.json();
 }
@@ -9,10 +27,11 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: body != null ? JSON.stringify(body) : undefined,
     cache: "no-store",
   });
+  handle401(res);
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(txt);
@@ -23,10 +42,11 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 async function patch<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: body != null ? JSON.stringify(body) : undefined,
     cache: "no-store",
   });
+  handle401(res);
   if (!res.ok) throw new Error(`PATCH ${path} → ${res.status}`);
   return res.json();
 }
@@ -380,4 +400,34 @@ export const api = {
   analytics: () => get<Analytics>("/api/analytics"),
 
   credits: () => get<Credits>("/api/credits"),
+
+  auth: {
+    register: (req: { username: string; password: string; display_name?: string; invite_code: string }) =>
+      post<{
+        access_token: string;
+        token_type: string;
+        user_id: number;
+        username: string;
+        display_name: string | null;
+        is_admin: boolean;
+      }>("/api/auth/register", req),
+
+    login: (req: { username: string; password: string }) =>
+      post<{
+        access_token: string;
+        token_type: string;
+        user_id: number;
+        username: string;
+        display_name: string | null;
+        is_admin: boolean;
+      }>("/api/auth/login", req),
+
+    me: () => get<{
+      id: number;
+      username: string;
+      display_name: string | null;
+      is_admin: boolean;
+      created_at: string;
+    }>("/api/auth/me"),
+  },
 };
