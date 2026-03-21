@@ -1,0 +1,19 @@
+# Dependencies (installed in container)
+frontend/node_modules
+frontend/.next
+__pycache__
+*.pyc
+
+# Local data (persistent volume in production)
+.cache
+*.db
+.env
+
+# Dev/IDE
+.git
+.vscode
+.idea
+*.md
+
+# Plans
+.claude

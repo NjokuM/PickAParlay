@@ -1,0 +1,19 @@
+# PickAParlay — Reverse proxy
+# Caddy listens on :8080, routes to backend (uvicorn) and frontend (next start)
+
+:8080 {
+    # API requests → FastAPI backend
+    handle /api/* {
+        reverse_proxy localhost:8000
+    }
+
+    # Everything else → Next.js frontend
+    handle {
+        reverse_proxy localhost:3000
+    }
+
+    # Disable access logging to keep container logs clean
+    log {
+        output discard
+    }
+}

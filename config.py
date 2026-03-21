@@ -224,8 +224,8 @@ CACHE_TTL: dict[str, int] = {
     "player_team":  43200,    # 12 hours — shorter than game_log so trades are caught same-day
 }
 
-CACHE_DIR: str = os.path.join(os.path.dirname(__file__), ".cache")
-DATABASE_PATH: str = os.path.join(os.path.dirname(__file__), "pickaparlay.db")
+CACHE_DIR: str = os.getenv("CACHE_DIR", os.path.join(os.path.dirname(__file__), ".cache"))
+DATABASE_PATH: str = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "pickaparlay.db"))
 
 # ---------------------------------------------------------------------------
 # Misc
