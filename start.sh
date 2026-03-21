@@ -25,9 +25,25 @@ PORT=3000 HOSTNAME=0.0.0.0 node server.js &
 FRONTEND_PID=$!
 cd /app
 
-# Wait for both services to be ready
-echo "[start] Waiting for services..."
-sleep 3
+# Wait for backend to be ready before starting Caddy
+echo "[start] Waiting for backend..."
+for i in $(seq 1 30); do
+    if curl -s http://localhost:8000/api/credits > /dev/null 2>&1; then
+        echo "[start] Backend ready after ${i}s"
+        break
+    fi
+    sleep 1
+done
+
+# Wait for frontend to be ready
+echo "[start] Waiting for frontend..."
+for i in $(seq 1 15); do
+    if curl -s http://localhost:3000 > /dev/null 2>&1; then
+        echo "[start] Frontend ready after ${i}s"
+        break
+    fi
+    sleep 1
+done
 
 # Start Caddy (foreground — keeps container alive)
 echo "[start] Starting Caddy proxy on :8080..."

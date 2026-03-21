@@ -1,28 +1,29 @@
-# PickAParlay — Fly.io deployment config
-# Deploy: fly launch → fly deploy
-# Persistent volume: fly volumes create pap_data --size 1 --region lhr
+# fly.toml app configuration file generated for pickaparlay on 2026-03-21T13:55:49Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "pickaparlay"
-primary_region = "lhr"  # London — closest to you
+app = 'pickaparlay'
+primary_region = 'lhr'
 
 [build]
 
 [env]
-  DATABASE_PATH = "/data/pickaparlay.db"
-  CACHE_DIR = "/data/cache"
-  CORS_ORIGINS = "*"
+  CACHE_DIR = '/data/cache'
+  CORS_ORIGINS = '*'
+  DATABASE_PATH = '/data/pickaparlay.db'
+
+[[mounts]]
+  source = 'pap_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
 
-[mounts]
-  source = "pap_data"
-  destination = "/data"
-
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = 'shared-cpu-1x'
+  memory = '1024mb'
