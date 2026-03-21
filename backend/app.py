@@ -247,8 +247,13 @@ def _run_refresh_background(season: str) -> None:
             _refresh_state["status"] = "grading"
 
         # 4b. Grade props (both OVER and UNDER sides) — fast now, all cache hits
+        #     Save incrementally every 50 props so progress survives crashes
         all_valued_props: list[ValuedProp] = []
         _current_player = ""
+        _unsaved_batch: list[ValuedProp] = []
+        game_date = games[0].game_date if games else None
+        BATCH_SIZE = 50
+
         for i, prop in enumerate(all_raw_props):
             # Log when we move to a new player
             if prop.player_name != _current_player:
@@ -260,22 +265,28 @@ def _run_refresh_background(season: str) -> None:
             vp_over = prop_grader.grade_prop(prop, injuries, season=season, side="over")
             if vp_over is not None:
                 all_valued_props.append(vp_over)
+                _unsaved_batch.append(vp_over)
             # Grade UNDER if a valid under price exists
             if prop.under_odds_decimal and prop.under_odds_decimal > 1.0:
                 vp_under = prop_grader.grade_prop(prop, injuries, season=season, side="under")
                 if vp_under is not None:
                     all_valued_props.append(vp_under)
+                    _unsaved_batch.append(vp_under)
             with _refresh_lock:
                 _refresh_state["props_graded"] = i + 1
+
+            # Incremental save — persist every BATCH_SIZE props
+            if len(_unsaved_batch) >= BATCH_SIZE and game_date:
+                database.upsert_graded_props(_unsaved_batch, game_date)
+                _unsaved_batch = []
+
+        # Save any remaining props
+        if _unsaved_batch and game_date:
+            database.upsert_graded_props(_unsaved_batch, game_date)
 
         # 5. Cache scored props
         prop_dicts = [dataclasses.asdict(vp) for vp in all_valued_props]
         cache.save_scored_props(prop_dicts)
-
-        # 5b. Persist all graded props to the database (upsert)
-        game_date = games[0].game_date if games else None
-        if game_date:
-            database.upsert_graded_props(all_valued_props, game_date)
 
         above_threshold = sum(
             1 for vp in all_valued_props if vp.value_score >= config.MIN_VALUE_SCORE
