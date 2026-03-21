@@ -60,8 +60,12 @@ export default function DashboardPage() {
     const id = setInterval(async () => {
       const s = await api.refreshStatus();
       setRefreshStatus(s);
+      // Re-fetch props during grading so new picks render live
+      if (s.status === "grading" && (s.props_graded ?? 0) > 0) {
+        fetchData();
+      }
       if (!s.running) { setRefreshing(false); clearInterval(id); setTimeout(fetchData, 500); }
-    }, 1500);
+    }, 3000);
     return () => clearInterval(id);
   }, [refreshing, fetchData]);
 
