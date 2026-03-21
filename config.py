@@ -214,7 +214,7 @@ NBA_API_SLEEP: float = 0.0         # no delay — 24h cache means most calls are
 # ---------------------------------------------------------------------------
 CACHE_TTL: dict[str, int] = {
     "games":        43200,    # 12 hours
-    "game_log":     86400,    # 24 hours (historical, doesn't change intra-day)
+    "game_log":     21600,    # 6 hours — ensures B2B games are picked up on next-day refresh
     "injuries":     2700,     # 45 minutes
     "props":        7200,     # 2 hours (used for cache key, but smart refresh invalidates before fetching)
     "events":       28800,    # 8 hours — game list doesn't change intra-day

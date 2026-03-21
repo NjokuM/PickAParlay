@@ -1006,14 +1006,14 @@ def _run_alt_refresh_background(season: str) -> None:
 def _factors_from_db_row(r: dict) -> list[FactorResult]:
     """Reconstruct FactorResult objects from per-factor scores stored in graded_props."""
     factor_map = [
-        ("Consistency",    "score_consistency",    config.FACTOR_WEIGHTS["consistency"]),
-        ("vs Opponent",    "score_vs_opponent",    config.FACTOR_WEIGHTS["vs_opponent"]),
-        ("Home/Away",      "score_home_away",      config.FACTOR_WEIGHTS["home_away"]),
-        ("Injury Context", "score_injury",         config.FACTOR_WEIGHTS["injury"]),
-        ("Team Context",   "score_team_context",   config.FACTOR_WEIGHTS["team_context"]),
-        ("Season Average", "score_season_avg",     config.FACTOR_WEIGHTS["season_avg"]),
-        ("Blowout Risk",   "score_blowout_risk",   config.FACTOR_WEIGHTS["blowout_risk"]),
-        ("Volume & Usage", "score_volume_context",  config.FACTOR_WEIGHTS["volume_context"]),
+        ("Consistency",       "score_consistency",       config.FACTOR_WEIGHTS["consistency"]),
+        ("Opponent Defense",  "score_opponent_defense",   config.FACTOR_WEIGHTS["opponent_defense"]),
+        ("vs Opponent",       "score_vs_opponent",        config.FACTOR_WEIGHTS["vs_opponent"]),
+        ("Home/Away",         "score_home_away",          config.FACTOR_WEIGHTS["home_away"]),
+        ("Injury Context",    "score_injury",             config.FACTOR_WEIGHTS["injury"]),
+        ("Season Average",    "score_season_avg",         config.FACTOR_WEIGHTS["season_avg"]),
+        ("Blowout Risk",      "score_blowout_risk",       config.FACTOR_WEIGHTS["blowout_risk"]),
+        ("Volume & Usage",    "score_volume_context",      config.FACTOR_WEIGHTS["volume_context"]),
     ]
     factors = []
     for name, col, weight in factor_map:

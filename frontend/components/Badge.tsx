@@ -2,15 +2,15 @@
 
 export function ScoreBadge({ score }: { score: number }) {
   const bg =
-    score >= 80 ? "#1e3a2f"
-    : score >= 65 ? "#1a3025"
-    : score >= 50 ? "#2d2a1e"
-    : "#2d1e1e";
+    score >= 85 ? "#2a1e3a"   // purple — elite
+    : score >= 70 ? "#1e3a2f" // green — good
+    : score >= 50 ? "#2d2a1e" // yellow — average
+    : "#2d1e1e";              // red — weak
   const color =
-    score >= 80 ? "#3fb950"
-    : score >= 65 ? "#2ea043"
-    : score >= 50 ? "#d29922"
-    : "#f85149";
+    score >= 85 ? "#b87aff"   // purple
+    : score >= 70 ? "#3fb950" // green
+    : score >= 50 ? "#d29922" // yellow
+    : "#f85149";              // red
 
   return (
     <span style={{
