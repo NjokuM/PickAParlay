@@ -187,8 +187,33 @@ def _run_refresh_background(season: str) -> None:
                 )
             return
 
-        # 4a. Pre-warm cache — fetch game logs + current team in parallel
-        #     This means grade_prop() will hit cache instantly (no sequential sleeps)
+        # 4a. Pre-warm cache — fetch ALL data upfront in parallel
+        #     This means grade_prop() will hit cache instantly (no sequential waits)
+
+        # --- Phase 1: Game-level data (spreads, team form, h2h, defense) ---
+        # These are per-game, not per-player, so only ~10 calls each
+        _log("⏳ Prefetching game-level data (spreads, team stats, defense)…",
+             "Prefetching game data…")
+
+        def _prefetch_game(game: NBAGame) -> None:
+            try:
+                if game.odds_event_id:
+                    odds_api.get_game_spread(game.odds_event_id)
+                for tid in (game.home_team_id, game.away_team_id):
+                    nba_stats.get_team_recent_form(tid, season=season)
+                nba_stats.get_h2h_record(game.home_team_id, game.away_team, season=season)
+                nba_stats.get_h2h_record(game.away_team_id, game.home_team, season=season)
+                for tid in (game.home_team_id, game.away_team_id):
+                    nba_stats.get_opponent_defensive_profile(tid, season=season)
+            except Exception as e:
+                print(f"[refresh]   ⚠️ Game prefetch failed: {e}")
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            pool.map(_prefetch_game, games)
+
+        _log(f"✅ Game data prefetched for {len(games)} games")
+
+        # --- Phase 2: Player-level data (game logs, current team) ---
         unique_pids = list({p.nba_player_id for p in all_raw_props if p.nba_player_id})
         total_players = len(unique_pids)
         prefetched = 0
