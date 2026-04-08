@@ -7,6 +7,7 @@ import { ScoreBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { useSlipBuilder } from "@/lib/slip-builder-context";
 import { bookmakerLabel } from "@/lib/bookmakers";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 const btn = (active?: boolean): React.CSSProperties => ({
   padding: "6px 14px", borderRadius: 6, border: "1px solid var(--border)",
@@ -37,6 +38,7 @@ function scoreColor(s: number): string {
 }
 
 export default function LadderPage() {
+  const isMobile = useIsMobile();
   // Slip builder
   const { addLeg, isInSlip } = useSlipBuilder();
 
@@ -329,65 +331,82 @@ export default function LadderPage() {
               No alt lines available yet. Click <strong style={{ color: "var(--text)" }}>Refresh Alt Lines</strong> to fetch and grade alternate props for tonight&apos;s games.
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {/* Table header */}
-              <div style={{ display: "grid", gridTemplateColumns: "38px 40px 1fr 120px 70px 60px 70px 60px 90px 52px", gap: "0 10px", padding: "8px 12px", fontSize: 11, color: "var(--muted)", fontWeight: 600, borderBottom: "1px solid var(--border)" }}>
-                <span>Score</span>
-                <span></span>
-                <span>Player</span>
-                <span>Market</span>
-                <span>Line</span>
-                <span>Side</span>
-                <span>Odds</span>
-                <span>Reco</span>
-                <span>Book</span>
-                <span></span>
-              </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 6 : 2 }}>
+              {/* Table header — desktop only */}
+              {!isMobile && (
+                <div style={{ display: "grid", gridTemplateColumns: "38px 40px 1fr 120px 70px 60px 70px 60px 90px 52px", gap: "0 10px", padding: "8px 12px", fontSize: 11, color: "var(--muted)", fontWeight: 600, borderBottom: "1px solid var(--border)" }}>
+                  <span>Score</span>
+                  <span></span>
+                  <span>Player</span>
+                  <span>Market</span>
+                  <span>Line</span>
+                  <span>Side</span>
+                  <span>Odds</span>
+                  <span>Reco</span>
+                  <span>Book</span>
+                  <span></span>
+                </div>
+              )}
 
               {filteredAlt.map(p => (
                 <div key={p.id}>
-                  <div
-                    style={{ display: "grid", gridTemplateColumns: "38px 40px 1fr 120px 70px 60px 70px 60px 90px 52px", gap: "0 10px", padding: "8px 12px", alignItems: "center", background: altExpanded === p.id ? "var(--surface)" : "transparent", borderBottom: "1px solid var(--border)", cursor: "pointer" }}
-                    onClick={() => setAltExpanded(altExpanded === p.id ? null : p.id)}
-                  >
-                    <ScoreBadge score={p.value_score} />
-                    <PlayerHeadshot playerId={p.nba_player_id} size={36} />
-                    <span style={{ fontWeight: 600, fontSize: 13 }}>{p.player_name}</span>
-                    <span style={{ fontSize: 12, color: "var(--muted)" }}>{p.market_label}</span>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{p.line}</span>
-                    <span style={{ fontSize: 12, color: p.side === "over" ? "var(--green)" : "var(--red)" }}>{(p.side ?? "over").toUpperCase()}</span>
-                    <span style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>{(p.decimal_odds ?? 0).toFixed(2)}</span>
-                    <span style={{ fontSize: 11, color: scoreColor(p.value_score) }}>{p.recommendation?.replace(" Value", "")}</span>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{bookmakerLabel(p.bookmaker)}</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        addLeg({
-                          propId: p.id,
-                          playerName: p.player_name,
-                          playerId: p.nba_player_id,
-                          market: p.market,
-                          marketLabel: p.market_label,
-                          line: p.line,
-                          side: p.side ?? "over",
-                          decimalOdds: p.decimal_odds ?? 0,
-                          valueScore: p.value_score,
-                          bookmaker: p.bookmaker,
-                          matchup: p.matchup,
-                        });
-                      }}
-                      disabled={isInSlip(p.id)}
-                      style={{
-                        padding: "3px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600,
-                        border: isInSlip(p.id) ? "1px solid var(--green)" : "1px solid var(--accent)",
-                        background: isInSlip(p.id) ? "transparent" : "transparent",
-                        color: isInSlip(p.id) ? "var(--green)" : "var(--accent)",
-                        cursor: isInSlip(p.id) ? "default" : "pointer",
-                      }}
+                  {isMobile ? (
+                    /* Mobile card */
+                    <div
+                      style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", cursor: "pointer" }}
+                      onClick={() => setAltExpanded(altExpanded === p.id ? null : p.id)}
                     >
-                      {isInSlip(p.id) ? "In Slip" : "+ Add"}
-                    </button>
-                  </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <PlayerHeadshot playerId={p.nba_player_id} size={32} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>{p.player_name}</div>
+                          <div style={{ fontSize: 11, color: "var(--muted)" }}>{p.matchup}</div>
+                        </div>
+                        <ScoreBadge score={p.value_score} />
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                        <span style={{ color: p.side === "over" ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{(p.side ?? "over").toUpperCase()}</span>
+                        <span>{p.line} {p.market_label}</span>
+                        <span style={{ color: "var(--accent)", fontWeight: 600 }}>{(p.decimal_odds ?? 0).toFixed(2)}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addLeg({ propId: p.id, playerName: p.player_name, playerId: p.nba_player_id, market: p.market, marketLabel: p.market_label, line: p.line, side: p.side ?? "over", decimalOdds: p.decimal_odds ?? 0, valueScore: p.value_score, bookmaker: p.bookmaker, matchup: p.matchup });
+                          }}
+                          disabled={isInSlip(p.id)}
+                          style={{ marginLeft: "auto", padding: "3px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, border: isInSlip(p.id) ? "1px solid var(--green)" : "1px solid var(--accent)", background: "transparent", color: isInSlip(p.id) ? "var(--green)" : "var(--accent)", cursor: isInSlip(p.id) ? "default" : "pointer" }}
+                        >
+                          {isInSlip(p.id) ? "✓" : "+"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Desktop grid row */
+                    <div
+                      style={{ display: "grid", gridTemplateColumns: "38px 40px 1fr 120px 70px 60px 70px 60px 90px 52px", gap: "0 10px", padding: "8px 12px", alignItems: "center", background: altExpanded === p.id ? "var(--surface)" : "transparent", borderBottom: "1px solid var(--border)", cursor: "pointer" }}
+                      onClick={() => setAltExpanded(altExpanded === p.id ? null : p.id)}
+                    >
+                      <ScoreBadge score={p.value_score} />
+                      <PlayerHeadshot playerId={p.nba_player_id} size={36} />
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{p.player_name}</span>
+                      <span style={{ fontSize: 12, color: "var(--muted)" }}>{p.market_label}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{p.line}</span>
+                      <span style={{ fontSize: 12, color: p.side === "over" ? "var(--green)" : "var(--red)" }}>{(p.side ?? "over").toUpperCase()}</span>
+                      <span style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>{(p.decimal_odds ?? 0).toFixed(2)}</span>
+                      <span style={{ fontSize: 11, color: scoreColor(p.value_score) }}>{p.recommendation?.replace(" Value", "")}</span>
+                      <span style={{ fontSize: 11, color: "var(--muted)" }}>{bookmakerLabel(p.bookmaker)}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          addLeg({ propId: p.id, playerName: p.player_name, playerId: p.nba_player_id, market: p.market, marketLabel: p.market_label, line: p.line, side: p.side ?? "over", decimalOdds: p.decimal_odds ?? 0, valueScore: p.value_score, bookmaker: p.bookmaker, matchup: p.matchup });
+                        }}
+                        disabled={isInSlip(p.id)}
+                        style={{ padding: "3px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, border: isInSlip(p.id) ? "1px solid var(--green)" : "1px solid var(--accent)", background: "transparent", color: isInSlip(p.id) ? "var(--green)" : "var(--accent)", cursor: isInSlip(p.id) ? "default" : "pointer" }}
+                      >
+                        {isInSlip(p.id) ? "In Slip" : "+ Add"}
+                      </button>
+                    </div>
+                  )}
 
                   {/* Expanded factor detail */}
                   {altExpanded === p.id && (
@@ -430,52 +449,51 @@ function SlipCard({
   setExpanded: (v: number | null) => void;
   prefix: string;
 }) {
+  const isMobile = useIsMobile();
   const cardKey = prefix === "s" ? -(idx + 1) : idx;   // unique key for expand state
   const isExpanded = expanded === cardKey;
 
   return (
     <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
       {/* Header */}
-      <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+      <div style={{ padding: isMobile ? "10px 12px" : "14px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", gap: isMobile ? 12 : 16, alignItems: "center" }}>
           <div>
             <span style={{ fontSize: 11, color: "var(--muted)" }}>Odds</span>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "var(--accent)" }}>{slip.combined_odds.toFixed(2)}</div>
+            <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, color: "var(--accent)" }}>{slip.combined_odds.toFixed(2)}</div>
           </div>
           <div>
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>Avg Score</span>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>{slip.avg_value_score.toFixed(1)}</div>
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>Score</span>
+            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700 }}>{slip.avg_value_score.toFixed(1)}</div>
           </div>
           <div>
             <span style={{ fontSize: 11, color: "var(--muted)" }}>Legs</span>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>{slip.legs.length}</div>
+            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700 }}>{slip.legs.length}</div>
           </div>
           {slip.has_correlated_legs && (
-            <span style={{ fontSize: 11, color: "var(--orange)", background: "#2d2a1e", padding: "2px 8px", borderRadius: 4 }}>⚠ correlated</span>
+            <span style={{ fontSize: 11, color: "var(--orange)", background: "#2d2a1e", padding: "2px 8px", borderRadius: 4 }}>⚠</span>
           )}
         </div>
         <button style={btn(isExpanded)} onClick={() => setExpanded(isExpanded ? null : cardKey)}>
-          {isExpanded ? "Hide detail" : "View detail"}
+          {isExpanded ? "Hide" : "Detail"}
         </button>
       </div>
 
       {/* Legs summary */}
-      <div style={{ padding: "12px 16px" }}>
+      <div style={{ padding: isMobile ? "8px 12px" : "12px 16px" }}>
         {slip.legs.map((leg, li) => (
-          <div key={li} style={{ display: "flex", alignItems: "center", gap: 14, padding: "6px 0", borderBottom: li < slip.legs.length - 1 ? "1px solid var(--border)" : "none" }}>
+          <div key={li} style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 14, padding: "6px 0", borderBottom: li < slip.legs.length - 1 ? "1px solid var(--border)" : "none" }}>
             <ScoreBadge score={leg.value_score} />
-            <PlayerHeadshot playerId={leg.player_id} size={40} />
-            <div style={{ flex: 1 }}>
-              <span style={{ fontWeight: 600 }}>{leg.player_name}</span>
-              <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 13 }}>
+            {!isMobile && <PlayerHeadshot playerId={leg.player_id} size={40} />}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
+              <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 12 }}>
                 {(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}
               </span>
             </div>
             <div style={{ color: "var(--accent)", fontSize: 13 }}>{leg.over_odds.toFixed(2)}</div>
-            <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>
-              {bookmakerLabel(leg.bookmaker)}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>
+            {!isMobile && <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>{bookmakerLabel(leg.bookmaker)}</div>}
+            {!isMobile && <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>}
           </div>
         ))}
       </div>

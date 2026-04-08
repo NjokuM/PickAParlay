@@ -9,13 +9,17 @@ Start with:
 """
 from __future__ import annotations
 
+import atexit
 import dataclasses
+import gc
 import os
 import sys
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 # Ensure the project root is on sys.path so all src/ imports work
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -28,6 +32,7 @@ import config
 import src.cache as cache
 import src.database as database
 from src.api import injury_api, nba_stats, odds_api
+from src.api.odds_api import get_pool_credits
 from src.analysis import bet_builder, prop_grader, results_checker
 from src.models import BetLeg, BetSlip, FactorResult, NBAGame, PlayerProp, ValuedProp
 from backend.auth import require_admin, require_user, router as auth_router
@@ -52,6 +57,56 @@ app.add_middleware(
 # Startup
 # ---------------------------------------------------------------------------
 
+_ET = ZoneInfo("America/New_York")
+_LONDON = ZoneInfo("Europe/London")
+
+# ---------------------------------------------------------------------------
+# APScheduler — automated cron jobs
+# ---------------------------------------------------------------------------
+
+from apscheduler.schedulers.background import BackgroundScheduler
+
+_scheduler = BackgroundScheduler(timezone=_LONDON)
+
+
+def _scheduled_grade_results() -> None:
+    """Grade last night's results. NBA dates are Eastern Time, so 6 AM London
+    on March 22 should grade March 21 ET games."""
+    yesterday_et = (datetime.now(_ET) - timedelta(days=1)).strftime("%Y-%m-%d")
+    print(f"[cron] Grading results for {yesterday_et} (yesterday ET)")
+
+    with _results_lock:
+        if _results_state["status"] == "running":
+            print("[cron] Results check already running — skipping")
+            return
+
+    t = threading.Thread(
+        target=_run_results_background, args=(yesterday_et,), daemon=True
+    )
+    t.start()
+
+
+def _scheduled_refresh() -> None:
+    """Run a props refresh. Skip if already running or credits are low."""
+    # Safety: skip if total pool credits < 50
+    pool = get_pool_credits()
+    remaining = pool["remaining"]
+    if remaining < 50:
+        print(f"[cron] Only {remaining} credits remaining across {pool['total_keys']} keys — skipping")
+        return
+
+    with _refresh_lock:
+        if _refresh_state["running"]:
+            print("[cron] Refresh already running — skipping scheduled refresh")
+            return
+
+    print(f"[cron] Starting scheduled refresh (credits remaining: {remaining})")
+    t = threading.Thread(
+        target=_run_refresh_background, args=(config.DEFAULT_SEASON,), daemon=True
+    )
+    t.start()
+
+
 @app.on_event("startup")
 def startup() -> None:
     database.init_db()
@@ -60,6 +115,31 @@ def startup() -> None:
     repaired = database.repair_deactivated_regular_props()
     if repaired:
         print(f"[startup] Repaired {repaired} regular props that were incorrectly deactivated.")
+
+    # Start cron scheduler
+    _scheduler.add_job(
+        _scheduled_grade_results,
+        "cron", hour=6, minute=0, id="grade_results",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _scheduled_refresh,
+        "cron", hour=6, minute=20, id="morning_refresh",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _scheduled_refresh,
+        "cron", hour=18, minute=0, id="evening_refresh",
+        replace_existing=True,
+    )
+    _scheduler.start()
+    print("[startup] Scheduler started — grade@06:00, refresh@06:20+18:00 (Europe/London)")
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    _scheduler.shutdown(wait=False)
+    print("[shutdown] Scheduler stopped")
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +176,9 @@ def _run_refresh_background(season: str) -> None:
         )
 
     try:
-        # 1. Tonight's games
-        games = nba_stats.get_todays_games()
+        # 1. Tonight's games (force_fresh=True to get live game statuses,
+        #    bypassing stale cache that may include now-in-progress games)
+        games = nba_stats.get_todays_games(force_fresh=True)
         if not games:
             with _refresh_lock:
                 _refresh_state.update(
@@ -106,9 +187,6 @@ def _run_refresh_background(season: str) -> None:
                     status="no_games",
                 )
             return
-
-        # Note: get_todays_games() already filters out started/finished games
-        # via GAME_STATUS_ID, so no additional filtering needed here.
 
         def _log(msg: str, detail: str = "") -> None:
             """Print to terminal and update refresh state detail."""
@@ -208,7 +286,7 @@ def _run_refresh_background(season: str) -> None:
             except Exception as e:
                 print(f"[refresh]   ⚠️ Game prefetch failed: {e}")
 
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=3) as pool:
             pool.map(_prefetch_game, games)
 
         _log(f"✅ Game data prefetched for {len(games)} games")
@@ -239,10 +317,14 @@ def _run_refresh_background(season: str) -> None:
                 _log(f"  👤 Prefetched {prefetched}/{total_players} players (latest: {name})",
                      f"Prefetching player data ({prefetched}/{total_players})")
 
-        with ThreadPoolExecutor(max_workers=10) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             pool.map(_prefetch, unique_pids)
 
         _log(f"✅ Prefetched {total_players} players — grading {len(all_raw_props)} props")
+
+        # Free prefetch references to reduce memory pressure during grading
+        del unique_pids, _pid_to_name
+        gc.collect()
         with _refresh_lock:
             _refresh_state["status"] = "grading"
 
@@ -289,25 +371,31 @@ def _run_refresh_background(season: str) -> None:
         if _unsaved_batch and game_date:
             database.upsert_graded_props(_unsaved_batch, game_date)
 
-        # 5. Final cache save
+        # 5. Final cache save + invalidate in-memory cache
         prop_dicts = [dataclasses.asdict(vp) for vp in all_valued_props]
         cache.save_scored_props(prop_dicts)
+        invalidate_props_cache()
 
         above_threshold = sum(
             1 for vp in all_valued_props if vp.value_score >= config.MIN_VALUE_SCORE
         )
+        graded_count = len(all_valued_props)
 
         run_id = database.save_grading_run(
             season=season,
             games_count=len(games),
             props_total=len(all_raw_props),
-            props_graded=len(all_valued_props),
+            props_graded=graded_count,
             props_eligible=above_threshold,
         )
 
+        # Free large objects now that everything is saved
+        del all_valued_props, all_raw_props, prop_dicts, _unsaved_batch
+        gc.collect()
+
         elapsed = (datetime.utcnow() - datetime.fromisoformat(_refresh_state["started_at"])).total_seconds()
         _log(
-            f"🏁 Done! {len(all_valued_props)} graded props "
+            f"🏁 Done! {graded_count} graded props "
             f"({above_threshold} above threshold) from {len(games)} games "
             f"in {elapsed:.1f}s",
             "done",
@@ -318,7 +406,7 @@ def _run_refresh_background(season: str) -> None:
                 running=False,
                 finished_at=datetime.utcnow().isoformat(),
                 status="done",
-                props_graded=len(all_valued_props),
+                props_graded=graded_count,
                 run_id=run_id,
             )
 
@@ -463,6 +551,102 @@ def _load_valued_props() -> list[ValuedProp]:
 
 
 # ---------------------------------------------------------------------------
+# Pre-computed props response cache (avoids 1000+ DB queries per request)
+# ---------------------------------------------------------------------------
+_props_response_cache: list[dict] | None = None
+_props_cache_ts: float = 0.0
+
+
+def _build_props_response() -> list[dict]:
+    """Build the full /api/props response once, cache it in memory.
+
+    This replaces per-prop DB lookups (1000+ individual queries) with a single
+    batch query, and avoids re-deserializing the cache file on every request.
+    """
+    global _props_response_cache, _props_cache_ts
+    raw_dicts = cache.load_scored_props_raw()
+    if not raw_dicts:
+        return []
+
+    # Batch-load all prop IDs in a single query
+    game_date = None
+    for d in raw_dicts:
+        try:
+            game_date = d["prop"]["game"]["game_date"]
+            break
+        except (KeyError, TypeError):
+            continue
+    id_lookup = database.get_all_graded_prop_ids(game_date) if game_date else {}
+
+    result = []
+    for d in raw_dicts:
+        try:
+            vp = _vp_from_dict(d)
+        except Exception:
+            continue
+        g = vp.prop.game
+        side = vp.backing_data.get("side", "over")
+        prop_id = id_lookup.get(
+            (vp.prop.player_name, vp.prop.market, vp.prop.line, side)
+        )
+        result.append({
+            "prop_id": prop_id,
+            "player_name": vp.prop.player_name,
+            "player_id": vp.prop.nba_player_id,
+            "market": vp.prop.market,
+            "market_label": config.get_market_label(vp.prop.market),
+            "line": vp.prop.line,
+            "side": side,
+            "over_odds": vp.prop.over_odds_decimal,
+            "bookmaker": vp.prop.bookmaker,
+            "is_paddy_power": vp.prop.is_paddy_power,
+            "value_score": round(vp.value_score, 1),
+            "recommendation": vp.recommendation,
+            "game": f"{g.away_team} @ {g.home_team}",
+            "game_date": g.game_date,
+            "suspicious_line": vp.suspicious_line,
+            "suspicious_reason": vp.suspicious_reason,
+            "factors": [
+                {
+                    "name": f.name,
+                    "score": round(f.score, 1),
+                    "weight": f.weight,
+                    "evidence": f.evidence,
+                    "confidence": f.confidence,
+                }
+                for f in vp.factors
+            ],
+            "backing_data": vp.backing_data,
+        })
+
+    _props_response_cache = result
+    _props_cache_ts = time.time()
+    return result
+
+
+def _get_props_response() -> list[dict]:
+    """Return cached response or build it. Rebuilds if cache file is newer."""
+    global _props_response_cache, _props_cache_ts
+    if _props_response_cache is not None:
+        # Check if cache file was updated since we last built the response
+        cache_path = cache._cache_path(f"scored_props_{date.today().isoformat()}")
+        try:
+            file_mtime = os.path.getmtime(cache_path)
+            if file_mtime <= _props_cache_ts:
+                return _props_response_cache
+        except OSError:
+            pass
+    return _build_props_response()
+
+
+def invalidate_props_cache() -> None:
+    """Clear in-memory cache so next request rebuilds from disk."""
+    global _props_response_cache, _props_cache_ts
+    _props_response_cache = None
+    _props_cache_ts = 0.0
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -494,28 +678,29 @@ def get_props(
     market: Optional[str] = Query(default=None),
     side: Optional[str] = Query(default=None),
 ) -> list[dict]:
-    """All scored props for today, optionally filtered."""
-    vps = _load_valued_props()
+    """All scored props for today, optionally filtered.
+
+    Uses an in-memory cache to avoid re-deserializing 1500+ props and
+    running 1000+ individual DB queries on every page load.
+    """
+    all_props = _get_props_response()
     result = []
-    for vp in vps:
-        if vp.value_score < min_score:
+    for p in all_props:
+        if p["value_score"] < min_score:
             continue
-        g_str = f"{vp.prop.game.away_team} @ {vp.prop.game.home_team}"
-        if game and game.upper() not in g_str.upper():
+        if game and game.upper() not in p["game"].upper():
             continue
-        if player and player.lower() not in vp.prop.player_name.lower():
+        if player and player.lower() not in p["player_name"].lower():
             continue
-        if bookmaker:
-            if vp.prop.bookmaker != bookmaker:
-                continue
+        if bookmaker and p["bookmaker"] != bookmaker:
+            continue
         if market:
-            ml = config.get_market_label(vp.prop.market)
-            # URLSearchParams encodes "+" as space; normalise both sides
+            ml = p["market_label"]
             if market.replace(" ", "+").lower() != ml.replace(" ", "+").lower():
                 continue
-        if side and vp.backing_data.get("side", "over") != side.lower():
+        if side and p.get("side", "over") != side.lower():
             continue
-        result.append(_vp_to_response(vp))
+        result.append(p)
 
     result.sort(key=lambda x: x["value_score"], reverse=True)
     return result
@@ -524,12 +709,11 @@ def get_props(
 @app.get("/api/bookmakers")
 def get_bookmakers() -> list[str]:
     """Distinct bookmakers present in today's cached props."""
-    vps = _load_valued_props()
+    all_props = _get_props_response()
     books: set[str] = set()
-    has_preferred = False
-    for vp in vps:
-        if vp.prop.bookmaker:
-            books.add(vp.prop.bookmaker)
+    for p in all_props:
+        if p.get("bookmaker"):
+            books.add(p["bookmaker"])
     return sorted(books)
 
 
@@ -822,12 +1006,126 @@ def get_analytics() -> dict:
 
 @app.get("/api/credits")
 def get_credits() -> dict:
-    """Odds API credit usage for this month."""
+    """Odds API credit usage — aggregated across the key pool."""
+    pool = get_pool_credits()
+    if pool["total_keys"] > 1:
+        return {
+            "used": pool["used"],
+            "remaining": pool["remaining"],
+            "total": pool["total"],
+            "active_keys": pool["active_keys"],
+            "total_keys": pool["total_keys"],
+            "keys": pool["keys"],
+        }
+    # Single key — keep original simple response
     return {
         "used": cache.get_credits_used(),
         "remaining": cache.get_credits_remaining(),
         "total": 500,
     }
+
+
+@app.get("/api/schedule")
+def get_schedule() -> dict:
+    """Return scheduled cron jobs with next run times, plus last refresh/grade times."""
+    jobs = []
+    for job in _scheduler.get_jobs():
+        next_run = job.next_run_time
+        jobs.append({
+            "id": job.id,
+            "next_run": next_run.isoformat() if next_run else None,
+            "next_run_human": next_run.strftime("%H:%M %Z on %b %d") if next_run else None,
+        })
+
+    # Last refresh time from _refresh_state
+    with _refresh_lock:
+        last_refresh = _refresh_state.get("finished_at")
+        refresh_status_val = _refresh_state.get("status")
+
+    # Last grade time from _results_state
+    with _results_lock:
+        last_grade = _results_state.get("finished_at")
+
+    return {
+        "jobs": jobs,
+        "last_refresh": last_refresh,
+        "refresh_status": refresh_status_val,
+        "last_grade": last_grade,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Custom Prop Grader
+# ---------------------------------------------------------------------------
+
+@app.get("/api/players")
+def get_tonight_players(_user: dict = Depends(require_user)) -> list[dict]:
+    """Return all players on teams playing tonight (for grader dropdown)."""
+    return nba_stats.get_tonight_rosters()
+
+
+class GradeCustomRequest(BaseModel):
+    player_name: str
+    player_id: int
+    market: str       # e.g. "player_points"
+    line: float       # e.g. 24.5
+    side: str         # "over" or "under"
+
+
+@app.post("/api/grade-custom")
+def grade_custom_prop(req: GradeCustomRequest, _user: dict = Depends(require_user)) -> dict:
+    """Grade a user-supplied prop through the 8-factor model."""
+    # Validate market
+    base_market = config.get_base_market(req.market)
+    if base_market not in config.MARKET_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown market: {req.market}")
+
+    if req.side not in ("over", "under"):
+        raise HTTPException(status_code=400, detail="Side must be 'over' or 'under'")
+
+    # Find the player's game tonight
+    team = nba_stats.get_player_current_team(req.player_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Could not determine player's team.")
+
+    games = nba_stats.get_todays_games()
+    game = None
+    for g in games:
+        if g.home_team == team or g.away_team == team:
+            game = g
+            break
+
+    if not game:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{req.player_name}'s team ({team}) is not playing tonight.",
+        )
+
+    # Build a PlayerProp with placeholder odds
+    prop = PlayerProp(
+        player_name=req.player_name,
+        nba_player_id=req.player_id,
+        market=req.market,
+        line=req.line,
+        over_odds_decimal=1.90,
+        under_odds_decimal=1.90,
+        bookmaker="custom",
+        game=game,
+        is_paddy_power=False,
+        is_alternate=False,
+    )
+
+    # Grade it
+    injuries = injury_api.get_injury_report()
+    vp = prop_grader.grade_prop(prop, injuries, season=config.DEFAULT_SEASON, side=req.side)
+
+    if vp is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Cannot grade {req.player_name} — player may be injured or have insufficient game history.",
+        )
+
+    return _vp_to_response(vp)
 
 
 # ---------------------------------------------------------------------------
@@ -957,13 +1255,11 @@ def _run_alt_refresh_background(season: str) -> None:
                 )
             return
 
-        games = nba_stats.get_todays_games()
+        games = nba_stats.get_todays_games(force_fresh=True)
         if not games:
             with _alt_refresh_lock:
                 _alt_refresh_state.update(running=False, finished_at=datetime.utcnow().isoformat(), status="no_games")
             return
-
-        # Note: get_todays_games() already filters out started/finished games.
 
         injuries = injury_api.get_injury_report()
         events = odds_api.get_events()
@@ -1259,6 +1555,9 @@ _results_state: dict = {
     "miss": 0,
     "no_data": 0,
     "slips_resolved": 0,
+    "games_finished": 0,
+    "games_in_progress": 0,
+    "games_not_started": 0,
     "error": None,
 }
 _results_lock = threading.Lock()
@@ -1293,6 +1592,9 @@ def _run_results_background(game_date: str) -> None:
                 miss=summary["miss"],
                 no_data=summary["no_data"],
                 slips_resolved=summary["slips_resolved"],
+                games_finished=summary.get("games_finished", 0),
+                games_in_progress=summary.get("games_in_progress", 0),
+                games_not_started=summary.get("games_not_started", 0),
             )
     except Exception as exc:
         with _results_lock:

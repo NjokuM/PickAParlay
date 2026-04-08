@@ -6,8 +6,10 @@ import { FactorGrid } from "@/components/FactorBar";
 import { ScoreBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { bookmakerLabel } from "@/lib/bookmakers";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 export default function SlipsPage() {
+  const isMobile = useIsMobile();
   const [odds, setOdds]         = useState("");            // empty = best-value mode
   const [legs, setLegs]         = useState("");
   const [minScore, setMinScore] = useState(50);
@@ -48,7 +50,7 @@ export default function SlipsPage() {
     } catch (e: unknown) { alert((e as Error).message); }
   }
 
-  const S: React.CSSProperties = { background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 10px", color: "var(--text)", fontSize: 13, outline: "none" };
+  const S: React.CSSProperties = { background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 10px", color: "var(--text)", fontSize: 13, outline: "none", width: isMobile ? "100%" : "auto" };
   const btn = (active?: boolean): React.CSSProperties => ({ padding: "6px 14px", borderRadius: 6, border: "1px solid var(--border)", background: active ? "var(--accent)" : "var(--surface2)", color: active ? "#0d1117" : "var(--text)", cursor: "pointer", fontSize: 13, fontWeight: active ? 600 : 400 });
 
   return (
@@ -59,39 +61,39 @@ export default function SlipsPage() {
       </div>
 
       {/* Controls */}
-      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "16px", marginBottom: 20, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
-        <div>
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: isMobile ? "12px" : "16px", marginBottom: 20, display: "flex", flexWrap: "wrap", gap: isMobile ? 8 : 12, alignItems: "flex-end" }}>
+        <div style={{ width: isMobile ? "calc(50% - 4px)" : "auto" }}>
           <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
             Target Odds
             {!odds && <span style={{ marginLeft: 6, color: "var(--accent)", fontWeight: 600 }}>Best Value</span>}
           </div>
-          <input style={{ ...S, width: 110 }} value={odds} onChange={e => setOdds(e.target.value)}
+          <input style={{ ...S, width: isMobile ? "100%" : 110 }} value={odds} onChange={e => setOdds(e.target.value)}
             placeholder="Any (Best Value)" onKeyDown={e => e.key === "Enter" && buildSlips()} />
-          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>e.g. 4/1 · 5.0 · +400</div>
+          {!isMobile && <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>e.g. 4/1 · 5.0 · +400</div>}
         </div>
 
-        <div>
+        <div style={{ width: isMobile ? "calc(50% - 4px)" : "auto" }}>
           <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Legs (optional)</div>
-          <select style={{ ...S, width: 100 }} value={legs} onChange={e => setLegs(e.target.value)}>
+          <select style={{ ...S, width: isMobile ? "100%" : 100 }} value={legs} onChange={e => setLegs(e.target.value)}>
             <option value="">Auto</option>
             {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} legs</option>)}
           </select>
         </div>
 
-        <div>
+        <div style={{ width: isMobile ? "calc(50% - 4px)" : "auto" }}>
           <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Sportsbook</div>
-          <select style={{ ...S, minWidth: 120 }} value={bookmaker} onChange={e => setBookmaker(e.target.value)}>
+          <select style={{ ...S, minWidth: isMobile ? 0 : 120 }} value={bookmaker} onChange={e => setBookmaker(e.target.value)}>
             <option value="">All Books</option>
             {books.map(b => <option key={b} value={b}>{bookmakerLabel(b)}</option>)}
           </select>
         </div>
 
-        <div>
+        <div style={{ width: isMobile ? "calc(50% - 4px)" : "auto" }}>
           <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Min Score: <strong style={{ color: "var(--text)" }}>{minScore}</strong></div>
-          <input type="range" min={40} max={90} step={5} value={minScore} onChange={e => setMinScore(Number(e.target.value))} style={{ width: 120, accentColor: "var(--accent)" }} />
+          <input type="range" min={40} max={90} step={5} value={minScore} onChange={e => setMinScore(Number(e.target.value))} style={{ width: isMobile ? "100%" : 120, accentColor: "var(--accent)" }} />
         </div>
 
-        <button style={{ ...btn(true), padding: "8px 20px" }} onClick={buildSlips} disabled={loading}>
+        <button style={{ ...btn(true), padding: "8px 20px", width: isMobile ? "100%" : "auto" }} onClick={buildSlips} disabled={loading}>
           {loading ? "Building…" : "Build Slips"}
         </button>
       </div>
@@ -168,18 +170,18 @@ export default function SlipsPage() {
             </div>
 
             {/* Legs summary */}
-            <div style={{ padding: "12px 16px" }}>
+            <div style={{ padding: isMobile ? "8px 12px" : "12px 16px" }}>
               {slip.legs.map((leg, li) => (
-                <div key={li} style={{ display: "flex", alignItems: "center", gap: 14, padding: "6px 0", borderBottom: li < slip.legs.length - 1 ? "1px solid var(--border)" : "none" }}>
+                <div key={li} style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 14, padding: "6px 0", borderBottom: li < slip.legs.length - 1 ? "1px solid var(--border)" : "none", flexWrap: isMobile ? "wrap" : "nowrap" }}>
                   <ScoreBadge score={leg.value_score} />
-                  <PlayerHeadshot playerId={leg.player_id} size={40} />
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontWeight: 600 }}>{leg.player_name}</span>
-                    <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 13 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
+                  {!isMobile && <PlayerHeadshot playerId={leg.player_id} size={40} />}
+                  <div style={{ flex: 1, minWidth: isMobile ? "calc(100% - 60px)" : "auto" }}>
+                    <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
+                    <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 12 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
                   </div>
                   <div style={{ color: "var(--accent)", fontSize: 13 }}>{leg.over_odds.toFixed(2)}</div>
-                  <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>{bookmakerLabel(leg.bookmaker)}</div>
-                  <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>
+                  {!isMobile && <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>{bookmakerLabel(leg.bookmaker)}</div>}
+                  {!isMobile && <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>}
                 </div>
               ))}
             </div>

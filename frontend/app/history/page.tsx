@@ -5,6 +5,7 @@ import { api, ResultsStatus, SavedSlip } from "@/lib/api";
 import { OutcomeBadge, LegResultBadge, ScoreBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { bookmakerLabel } from "@/lib/bookmakers";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 /** Return yesterday's date as "YYYY-MM-DD" in local time. */
 function yesterday(): string {
@@ -18,6 +19,7 @@ function formatDate(s: string) {
 }
 
 export default function HistoryPage() {
+  const isMobile = useIsMobile();
   const [slips, setSlips]       = useState<SavedSlip[]>([]);
   const [loading, setLoading]   = useState(true);
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -159,35 +161,34 @@ export default function HistoryPage() {
           {slips.map(slip => (
             <div key={slip.id} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
               {/* Header */}
-              <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, borderBottom: "1px solid var(--border)" }}>
-                <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+              <div style={{ padding: "12px 16px", display: "flex", alignItems: isMobile ? "flex-start" : "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, borderBottom: "1px solid var(--border)" }}>
+                <div style={{ display: "flex", gap: isMobile ? 8 : 16, alignItems: "center", flexWrap: "wrap" }}>
                   <span style={{ fontSize: 12, color: "var(--muted)" }}>#{slip.id}</span>
-                  <span style={{ fontSize: 12, color: "var(--muted)" }}>{formatDate(slip.saved_at)}</span>
+                  {!isMobile && <span style={{ fontSize: 12, color: "var(--muted)" }}>{formatDate(slip.saved_at)}</span>}
                   <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>{slip.combined_odds?.toFixed(2) ?? "—"}</span>
-                  <span style={{ fontSize: 12, color: "var(--muted)" }}>Target: {slip.target_odds_str}</span>
                   <span style={{ fontSize: 12, color: "var(--muted)" }}>Score: {slip.avg_value_score?.toFixed(1) ?? "—"}</span>
-                  {slip.bookmaker_filter && <span style={{ fontSize: 11, color: "var(--muted)" }}>📚 {slip.bookmaker_filter}</span>}
                 </div>
 
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <OutcomeBadge outcome={slip.outcome} />
                   <button style={btn()} onClick={() => setExpanded(expanded === slip.id ? null : slip.id)}>
-                    {expanded === slip.id ? "▲ Hide" : "▼ Details"}
+                    {expanded === slip.id ? "▲" : "▼"}
                   </button>
                 </div>
               </div>
 
               {/* Legs summary */}
-              <div style={{ padding: "10px 16px" }}>
+              <div style={{ padding: isMobile ? "8px 12px" : "10px 16px" }}>
                 {slip.legs.map(leg => (
-                  <div key={leg.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "4px 0" }}>
+                  <div key={leg.id} style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 14, padding: "4px 0", flexWrap: isMobile ? "wrap" : "nowrap" }}>
                     <LegResultBadge result={leg.leg_result} />
                     <ScoreBadge score={leg.value_score ?? 0} />
-                    <PlayerHeadshot playerId={leg.nba_player_id} size={36} />
-                    <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
-                    <span style={{ color: "var(--muted)", fontSize: 13 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
-                    <span style={{ color: "var(--accent)", fontSize: 12, marginLeft: "auto" }}>{leg.over_odds?.toFixed(2) ?? "—"}</span>
-                    <span style={{ color: "var(--muted)", fontSize: 11 }}>{bookmakerLabel(leg.bookmaker)}</span>
+                    {!isMobile && <PlayerHeadshot playerId={leg.nba_player_id} size={36} />}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
+                      <span style={{ color: "var(--muted)", fontSize: 12, marginLeft: 6 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
+                    </div>
+                    <span style={{ color: "var(--accent)", fontSize: 12 }}>{leg.over_odds?.toFixed(2) ?? "—"}</span>
                   </div>
                 ))}
               </div>

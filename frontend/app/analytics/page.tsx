@@ -6,6 +6,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, ReferenceLine, CartesianGrid, Legend,
 } from "recharts";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ const FACTOR_ORDER = [
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AnalyticsPage() {
+  const isMobile = useIsMobile();
   const [data, setData]       = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeFactor, setActiveFactor] = useState("Consistency");
@@ -128,7 +130,7 @@ export default function AnalyticsPage() {
       </div>
 
       {/* ── KPI Row ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(5, 1fr)", gap: 12, marginBottom: 24 }}>
         {[
           { label: "Total Picks", value: picks.total, color: "var(--text)" },
           { label: "Pick Hit Rate",
@@ -159,7 +161,7 @@ export default function AnalyticsPage() {
       ) : (
         <>
           {/* ── Row 1: Value Score Calibration + Daily Trend ── */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
             {/* Value Score Calibration */}
             <div style={CARD}>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Value Score Calibration</div>
@@ -235,7 +237,7 @@ export default function AnalyticsPage() {
           </div>
 
           {/* ── Row 2: Hit rate by Market + Factor Summary Table ── */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
             {/* Market breakdown */}
             {marketData.length > 0 && (
               <div style={CARD}>
@@ -349,7 +351,7 @@ export default function AnalyticsPage() {
           {slips.total_slips > 0 && (
             <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)", marginBottom: 8 }}>Bet Slip Stats</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 12 }}>
                 <div style={CARD}>
                   <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Slips Recorded</div>
                   <div style={{ fontSize: 20, fontWeight: 700 }}>{slips.total_slips}</div>

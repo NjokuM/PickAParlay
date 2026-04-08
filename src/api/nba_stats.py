@@ -23,6 +23,7 @@ from nba_api.stats.endpoints import (
     TeamGameLog,
     LeagueGameLog,
     CommonPlayerInfo,
+    CommonTeamRoster,
 )
 from nba_api.stats.static import players as nba_players_static
 from nba_api.stats.static import teams as nba_teams_static
@@ -82,19 +83,24 @@ def get_team_id(abbreviation: str) -> int | None:
 # Tonight's games
 # ---------------------------------------------------------------------------
 
-def get_todays_games() -> list[NBAGame]:
+def get_todays_games(force_fresh: bool = False) -> list[NBAGame]:
     """
-    Return NBAGame objects for games that have NOT yet started
-    (or start within TIP_OFF_BUFFER_MINUTES).
+    Return NBAGame objects for games that have NOT yet started.
+
+    Args:
+        force_fresh: If True, bypass the cache and re-fetch game statuses
+                     from the NBA API. Use this during refresh to avoid
+                     serving stale data for games that have since started.
     """
     # Use Eastern Time — NBA schedules games by ET date.
     # Without this, midnight UTC (= 7 PM ET) rolls the date forward and
     # fetches the *next* day's games before tonight's have even tipped off.
     date_str = datetime.now(_ET).strftime("%Y-%m-%d")
     cache_key = f"games_{date_str}"
-    cached = cache_get(cache_key, config.CACHE_TTL["games"])
-    if cached:
-        return [NBAGame(**g) for g in cached]
+    if not force_fresh:
+        cached = cache_get(cache_key, config.CACHE_TTL["games"])
+        if cached:
+            return [NBAGame(**g) for g in cached]
 
     _sleep()
     try:
@@ -104,12 +110,10 @@ def get_todays_games() -> list[NBAGame]:
         return []
 
     now_utc = datetime.now(timezone.utc)
-    cutoff = now_utc + timedelta(minutes=config.TIP_OFF_BUFFER_MINUTES)
 
     results: list[NBAGame] = []
     for _, row in games_df.iterrows():
-        game_time_str = row.get("GAME_STATUS_TEXT", "")
-        # nba_api returns game time in ET; we skip started games
+        # Skip in-progress and finished games
         if _game_has_started(row, now_utc):
             continue
 
@@ -640,6 +644,48 @@ def get_player_current_team(player_id: int) -> str | None:
     except Exception:
         pass
     return None
+
+
+def get_tonight_rosters() -> list[dict]:
+    """
+    Return all players on teams playing tonight.
+    Each entry: {"player_name": str, "player_id": int, "team": str}.
+    Cached for 1 hour per game date.
+    """
+    games = get_todays_games()
+    if not games:
+        return []
+
+    cache_key = f"tonight_rosters_{games[0].game_date}"
+    cached = cache_get(cache_key, 3600)
+    if cached:
+        return cached
+
+    team_ids: dict[int, str] = {}
+    for g in games:
+        team_ids[g.home_team_id] = g.home_team
+        team_ids[g.away_team_id] = g.away_team
+
+    players: list[dict] = []
+    for tid, abbr in team_ids.items():
+        _sleep()
+        try:
+            roster = CommonTeamRoster(
+                team_id=tid, season=config.DEFAULT_SEASON
+            )
+            df = roster.common_team_roster.get_data_frame()
+            for _, row in df.iterrows():
+                players.append({
+                    "player_name": row["PLAYER"],
+                    "player_id": int(row["PLAYER_ID"]),
+                    "team": abbr,
+                })
+        except Exception as e:
+            print(f"[nba_stats] Failed to fetch roster for {abbr}: {e}")
+
+    players.sort(key=lambda p: p["player_name"])
+    cache_set(cache_key, players)
+    return players
 
 
 # ---------------------------------------------------------------------------

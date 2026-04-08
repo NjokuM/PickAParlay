@@ -75,10 +75,11 @@ _COMBO_COMPONENTS: dict[str, list[str]] = {
 # Box score fetching
 # ---------------------------------------------------------------------------
 
-def fetch_game_ids_for_date(game_date: str) -> list[str]:
+def fetch_game_info_for_date(game_date: str) -> list[dict]:
     """
-    Return a list of NBA game IDs for the given date ("YYYY-MM-DD" or "MM/DD/YYYY").
-    Uses ScoreboardV2 which returns results for any past date.
+    Return game info dicts for the given date.
+    Each dict: {"game_id": str, "status_id": int}
+    Status: 1 = not started, 2 = in progress, 3 = final.
     """
     from nba_api.stats.endpoints import scoreboardv2
 
@@ -95,29 +96,43 @@ def fetch_game_ids_for_date(game_date: str) -> list[str]:
     except Exception:
         return []   # API failure — return empty rather than crash
 
-    game_ids: list[str] = []
+    games: list[dict] = []
     for rs in raw.get("resultSets", []):
         if rs["name"] == "GameHeader":
             try:
                 gid_idx = rs["headers"].index("GAME_ID")
+                status_idx = rs["headers"].index("GAME_STATUS_ID")
             except ValueError:
                 continue
             for row in rs["rowSet"]:
-                game_ids.append(row[gid_idx])
-    return game_ids
+                games.append({
+                    "game_id": row[gid_idx],
+                    "status_id": int(row[status_idx]),
+                })
+    return games
 
 
-def fetch_box_scores(game_date: str) -> dict[str, dict[str, float]]:
+def fetch_game_ids_for_date(game_date: str) -> list[str]:
+    """Return a list of NBA game IDs for the given date (backwards compat)."""
+    return [g["game_id"] for g in fetch_game_info_for_date(game_date)]
+
+
+def fetch_box_scores(
+    game_date: str,
+    only_game_ids: list[str] | None = None,
+) -> dict[str, dict[str, float]]:
     """
     Fetch all player box scores for every game on game_date.
+    If only_game_ids is provided, only fetch those games (skip others).
     Returns {player_name_lower: {v3_stat_key: value, ...}}.
     """
     from nba_api.stats.endpoints import boxscoretraditionalv3
 
-    game_ids = fetch_game_ids_for_date(game_date)
+    if only_game_ids is None:
+        only_game_ids = fetch_game_ids_for_date(game_date)
     player_stats: dict[str, dict[str, float]] = {}
 
-    for gid in game_ids:
+    for gid in only_game_ids:
         time.sleep(config.NBA_API_SLEEP)
         try:
             raw = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=gid).get_dict()
@@ -196,11 +211,42 @@ def check_results_for_date(game_date: str) -> dict:
       2. Propagate results to matching slip_legs rows
       3. Auto-resolve any slips where all legs are now graded
 
+    Only grades props for FINISHED games (status 3). In-progress games are
+    skipped — their props stay unresolved until the next check-results run.
+
     Returns a summary dict:
-      {checked, hit, miss, no_data, slips_resolved, props_checked}
+      {checked, hit, miss, no_data, slips_resolved, props_checked,
+       games_finished, games_in_progress, games_not_started}
     """
-    # Fetch box scores (may take a few seconds with per-request sleeps)
-    player_stats = fetch_box_scores(game_date)
+    # For past dates, skip status check — ScoreboardV2 returns unreliable
+    # statuses for historical dates (often shows "not started" for finished
+    # games). Only check statuses for today's ET date where games may be live.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+    if game_date < today_et:
+        # Historical date — all games are finished, fetch all box scores
+        all_game_ids = fetch_game_ids_for_date(game_date)
+        print(f"[results] 📅 Historical date {game_date} — fetching all {len(all_game_ids)} game(s)")
+        player_stats = fetch_box_scores(game_date, only_game_ids=all_game_ids)
+        in_progress = []
+        not_started = []
+        finished_ids = all_game_ids
+    else:
+        # Today — check live statuses to avoid grading in-progress games
+        game_info = fetch_game_info_for_date(game_date)
+        finished_ids = [g["game_id"] for g in game_info if g["status_id"] == 3]
+        in_progress = [g for g in game_info if g["status_id"] == 2]
+        not_started = [g for g in game_info if g["status_id"] == 1]
+
+        if in_progress:
+            print(f"[results] ⚠️ {len(in_progress)} game(s) still in progress — skipping those")
+        if not_started:
+            print(f"[results] ⏳ {len(not_started)} game(s) not started yet")
+        print(f"[results] ✅ Grading results for {len(finished_ids)} finished game(s)")
+
+        player_stats = fetch_box_scores(game_date, only_game_ids=finished_ids)
 
     # ── Phase 1: Grade all unresolved graded_props ───────────────────────
     graded_props = get_unresolved_graded_props(game_date)
@@ -283,4 +329,7 @@ def check_results_for_date(game_date: str) -> dict:
         "slips_resolved": len(slips_resolved),
         "props_checked":  props_checked,
         "legs_propagated": legs_updated,
+        "games_finished":    len(finished_ids),
+        "games_in_progress": len(in_progress),
+        "games_not_started": len(not_started),
     }

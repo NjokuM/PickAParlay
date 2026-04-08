@@ -31,9 +31,18 @@ DEFAULT_SEASON: str = _nba_season(0)    # e.g. "2025-26"
 PREV_SEASON:    str = _nba_season(-1)   # e.g. "2024-25"
 
 # ---------------------------------------------------------------------------
-# API Keys
+# API Keys — supports a pool of keys for automatic rotation
+# Set ODDS_API_KEYS="key1,key2,key3" or fall back to single ODDS_API_KEY
 # ---------------------------------------------------------------------------
-ODDS_API_KEY: str = os.getenv("ODDS_API_KEY", "")
+def _parse_api_keys() -> list[str]:
+    multi = os.getenv("ODDS_API_KEYS", "")
+    if multi:
+        return [k.strip() for k in multi.split(",") if k.strip()]
+    single = os.getenv("ODDS_API_KEY", "")
+    return [single] if single else []
+
+ODDS_API_KEYS: list[str] = _parse_api_keys()
+ODDS_API_KEY: str = ODDS_API_KEYS[0] if ODDS_API_KEYS else ""  # backwards compat
 
 # ---------------------------------------------------------------------------
 # Factor weights — must sum to 1.0

@@ -178,6 +178,8 @@ export interface Credits {
   used: number;
   remaining: number;
   total: number;
+  active_keys?: number;
+  total_keys?: number;
 }
 
 export interface RefreshStatus {
@@ -257,12 +259,31 @@ export interface ResultsStatus {
   error: string | null;
 }
 
+export interface ScheduleJob {
+  id: string;
+  next_run: string | null;
+  next_run_human: string | null;
+}
+
+export interface ScheduleInfo {
+  jobs: ScheduleJob[];
+  last_refresh: string | null;
+  refresh_status: string | null;
+  last_grade: string | null;
+}
+
 export interface Game {
   game_id: string;
   home_team: string;
   away_team: string;
   matchup: string;
   game_date: string;
+}
+
+export interface TonightPlayer {
+  player_name: string;
+  player_id: number;
+  team: string;
 }
 
 // ─── API calls ────────────────────────────────────────────────────────────────
@@ -400,6 +421,18 @@ export const api = {
   analytics: () => get<Analytics>("/api/analytics"),
 
   credits: () => get<Credits>("/api/credits"),
+
+  schedule: () => get<ScheduleInfo>("/api/schedule"),
+
+  tonightPlayers: () => get<TonightPlayer[]>("/api/players"),
+
+  gradeCustom: (req: {
+    player_name: string;
+    player_id: number;
+    market: string;
+    line: number;
+    side: "over" | "under";
+  }) => post<Prop>("/api/grade-custom", req),
 
   auth: {
     register: (req: { username: string; password: string; display_name?: string; invite_code: string }) =>

@@ -3,14 +3,22 @@ The Odds API wrapper.
 Fetches game lines (spreads) and player props for tonight's NBA games.
 Prefers Paddy Power; falls back to best available if PP doesn't offer a market.
 API credit usage is tracked via src/cache.py.
+
+Supports a pool of API keys (ODDS_API_KEYS env var, comma-separated).
+On each request the key with the most remaining credits is used automatically.
+Exhausted keys (0 remaining or 403) are skipped until the pool is replenished.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import threading
 import requests
 from typing import Any
 
 import config
-import sys, os
+import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.cache import (
     get as cache_get,
@@ -23,38 +31,192 @@ from src.models import NBAGame, PlayerProp
 
 
 # ---------------------------------------------------------------------------
+# API Key Pool — automatic rotation across multiple keys
+# ---------------------------------------------------------------------------
+
+_pool_lock = threading.Lock()
+
+# Per-key credit state: {key_hash: {"used": int, "remaining": int, "exhausted": bool}}
+_key_credits: dict[str, dict] = {}
+
+# Persistent cache file for key credits (survives restarts)
+_KEY_POOL_FILE = os.path.join(
+    os.getenv("CACHE_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".cache")),
+    "key_pool.json",
+)
+
+
+def _khash(key: str) -> str:
+    """Short hash for logging (never log the full key)."""
+    return hashlib.sha256(key.encode()).hexdigest()[:8]
+
+
+def _load_pool_state() -> None:
+    """Load persisted per-key credit state from disk."""
+    global _key_credits
+    if os.path.exists(_KEY_POOL_FILE):
+        try:
+            with open(_KEY_POOL_FILE) as f:
+                _key_credits = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            _key_credits = {}
+    # Ensure every configured key has an entry
+    for key in config.ODDS_API_KEYS:
+        kh = _khash(key)
+        if kh not in _key_credits:
+            _key_credits[kh] = {"used": 0, "remaining": 500, "exhausted": False}
+
+
+def _save_pool_state() -> None:
+    """Persist per-key credit state to disk."""
+    try:
+        os.makedirs(os.path.dirname(_KEY_POOL_FILE), exist_ok=True)
+        with open(_KEY_POOL_FILE, "w") as f:
+            json.dump(_key_credits, f)
+    except OSError:
+        pass
+
+
+def _pick_best_key() -> str | None:
+    """Return the API key with the most remaining credits, skipping exhausted keys."""
+    best_key: str | None = None
+    best_remaining = -1
+    for key in config.ODDS_API_KEYS:
+        kh = _khash(key)
+        state = _key_credits.get(kh, {})
+        if state.get("exhausted", False):
+            continue
+        rem = state.get("remaining", 500)
+        if rem > best_remaining:
+            best_remaining = rem
+            best_key = key
+    return best_key
+
+
+def _update_key_credits(key: str, used: int, remaining: int | None) -> None:
+    """Update credit state for a specific key after an API response."""
+    kh = _khash(key)
+    entry = _key_credits.setdefault(kh, {"used": 0, "remaining": 500, "exhausted": False})
+    entry["used"] = used
+    if remaining is not None:
+        entry["remaining"] = remaining
+        if remaining <= 0:
+            entry["exhausted"] = True
+            print(f"[key-pool] Key ...{kh} exhausted (0 remaining) — rotating to next key")
+    _save_pool_state()
+
+
+def _mark_exhausted(key: str) -> None:
+    """Mark a key as exhausted (e.g. after a 403)."""
+    kh = _khash(key)
+    entry = _key_credits.setdefault(kh, {"used": 0, "remaining": 0, "exhausted": False})
+    entry["exhausted"] = True
+    entry["remaining"] = 0
+    print(f"[key-pool] Key ...{kh} marked exhausted (403)")
+    _save_pool_state()
+
+
+def get_pool_credits() -> dict:
+    """Return aggregate credit info across all keys in the pool."""
+    with _pool_lock:
+        total_remaining = 0
+        total_used = 0
+        total_limit = 0
+        keys_info = []
+        for key in config.ODDS_API_KEYS:
+            kh = _khash(key)
+            state = _key_credits.get(kh, {"used": 0, "remaining": 500, "exhausted": False})
+            used = state.get("used", 0)
+            rem = state.get("remaining", 500)
+            total_used += used
+            total_remaining += rem
+            total_limit += used + rem
+            keys_info.append({
+                "key_hash": kh,
+                "used": used,
+                "remaining": rem,
+                "exhausted": state.get("exhausted", False),
+            })
+        return {
+            "used": total_used,
+            "remaining": total_remaining,
+            "total": total_limit,
+            "keys": keys_info,
+            "active_keys": sum(1 for k in keys_info if not k["exhausted"]),
+            "total_keys": len(keys_info),
+        }
+
+
+# Initialise pool state on import
+_load_pool_state()
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 def _get(path: str, params: dict) -> dict | list | None:
-    """Make a GET request to The Odds API. Returns None on failure."""
-    if not config.ODDS_API_KEY:
+    """Make a GET request to The Odds API using the best available key."""
+    with _pool_lock:
+        api_key = _pick_best_key()
+    if not api_key:
+        print("[odds-api] ❌ No API keys available (all exhausted or none configured)")
         return None
-    params["apiKey"] = config.ODDS_API_KEY
+
+    params["apiKey"] = api_key
     params.setdefault("oddsFormat", "decimal")
     url = f"{config.ODDS_API_BASE_URL}{path}"
     try:
         resp = requests.get(url, params=params, timeout=15)
-        # Sync credit counter directly from the API's ground-truth headers.
-        # x-requests-used reflects actual billing (e.g. prop fetches cost per market),
-        # so this is always more accurate than our manual +1 counting.
+        # Sync credit counter from response headers
         raw_used = resp.headers.get("x-requests-used")
         raw_remaining = resp.headers.get("x-requests-remaining")
         if raw_used is not None:
             try:
-                sync_credits_from_header(
-                    used=int(raw_used),
-                    remaining=int(raw_remaining) if raw_remaining is not None else None,
-                )
+                used_val = int(raw_used)
+                rem_val = int(raw_remaining) if raw_remaining is not None else None
+                with _pool_lock:
+                    _update_key_credits(api_key, used_val, rem_val)
+                # Also sync the global counter (for backwards compat with /api/credits)
+                sync_credits_from_header(used=used_val, remaining=rem_val)
             except ValueError:
-                record_api_request(1)   # header malformed — fall back to +1
+                record_api_request(1)
         else:
-            record_api_request(1)       # no header at all — fall back to +1
+            record_api_request(1)
+
         if resp.status_code == 401:
-            print(f"[odds-api] ❌ API key rejected (401) — key may be invalid")
+            print(f"[odds-api] ❌ Key ...{_khash(api_key)} rejected (401)")
+            with _pool_lock:
+                _mark_exhausted(api_key)
             return None
         if resp.status_code == 403:
-            print(f"[odds-api] ❌ API key out of credits (403) — swap to a fresh key")
+            print(f"[odds-api] ❌ Key ...{_khash(api_key)} out of credits (403)")
+            with _pool_lock:
+                _mark_exhausted(api_key)
+            # Retry once with the next best key
+            with _pool_lock:
+                next_key = _pick_best_key()
+            if next_key and next_key != api_key:
+                print(f"[odds-api] ↻ Retrying with key ...{_khash(next_key)}")
+                params["apiKey"] = next_key
+                resp2 = requests.get(url, params=params, timeout=15)
+                raw_used2 = resp2.headers.get("x-requests-used")
+                raw_remaining2 = resp2.headers.get("x-requests-remaining")
+                if raw_used2 is not None:
+                    try:
+                        with _pool_lock:
+                            _update_key_credits(next_key, int(raw_used2),
+                                int(raw_remaining2) if raw_remaining2 else None)
+                    except ValueError:
+                        pass
+                if resp2.status_code in (401, 403):
+                    with _pool_lock:
+                        _mark_exhausted(next_key)
+                    return None
+                if resp2.status_code == 429:
+                    return None
+                resp2.raise_for_status()
+                return resp2.json()
             return None
         if resp.status_code == 429:
             print(f"[odds-api] ❌ Rate limited (429) — too many requests")

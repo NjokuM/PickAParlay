@@ -302,6 +302,23 @@ def get_graded_prop_id(
         return row["id"] if row else None
 
 
+def get_all_graded_prop_ids(game_date: str) -> dict[tuple[str, str, float, str], int]:
+    """Batch lookup: return {(player_name, market, line, side): id} for a game date.
+
+    Single query replaces 1000+ individual lookups in the /api/props endpoint.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT id, player_name, market, line, side FROM graded_props
+               WHERE game_date = ?""",
+            (game_date,),
+        ).fetchall()
+        return {
+            (row["player_name"], row["market"], row["line"], row["side"]): row["id"]
+            for row in rows
+        }
+
+
 # ---------------------------------------------------------------------------
 # Saving slips
 # ---------------------------------------------------------------------------

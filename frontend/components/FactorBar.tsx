@@ -64,7 +64,7 @@ export function FactorGrid({ factors }: { factors: Factor[] }) {
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: "1fr 1fr",
+      gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
       gap: "8px 20px",
       padding: "12px 0",
     }}>

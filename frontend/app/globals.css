@@ -26,6 +26,26 @@ html, body {
   line-height: 1.5;
 }
 
+html, body {
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Smooth momentum scrolling on mobile */
+main {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Touch-friendly tap targets */
+@media (max-width: 768px) {
+  button, select, input[type="date"] {
+    min-height: 38px;
+  }
+  select {
+    appearance: auto;
+  }
+}
+
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

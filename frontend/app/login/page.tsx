@@ -70,7 +70,9 @@ export default function LoginPage() {
       background: "#0d1117",
     }}>
       <div style={{
-        width: 380,
+        width: "100%",
+        maxWidth: 380,
+        margin: "0 16px",
         background: "var(--surface)",
         border: "1px solid var(--border)",
         borderRadius: 12,

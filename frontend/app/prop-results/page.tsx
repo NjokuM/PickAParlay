@@ -5,6 +5,7 @@ import { api, PropResult, ResultsStatus } from "@/lib/api";
 import { ScoreBadge, LegResultBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { bookmakerLabel } from "@/lib/bookmakers";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,7 @@ const MARKETS = [
 ];
 
 export default function PropResultsPage() {
+  const isMobile = useIsMobile();
   const [dateFrom,   setDateFrom]   = useState(nDaysAgo(7));
   const [dateTo,     setDateTo]     = useState(today());
   const [player,     setPlayer]     = useState("");
@@ -191,7 +193,7 @@ export default function PropResultsPage() {
   const S: React.CSSProperties = {
     background: "var(--surface2)", border: "1px solid var(--border)",
     borderRadius: 6, padding: "6px 10px", color: "var(--text)",
-    fontSize: 13, outline: "none",
+    fontSize: 13, outline: "none", width: isMobile ? "100%" : "auto",
   };
   const btn = (active?: boolean): React.CSSProperties => ({
     padding: "6px 14px", borderRadius: 6, border: "1px solid var(--border)",
@@ -352,7 +354,7 @@ export default function PropResultsPage() {
 
       {/* Summary stats — only shown when data loaded */}
       {loaded && total > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "auto auto 1fr", gap: 12, marginBottom: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "auto auto 1fr", gap: 12, marginBottom: 20 }}>
           {/* KPI pills */}
           <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 20px", textAlign: "center" }}>
             <div style={{ fontSize: 24, fontWeight: 700 }}>{total}</div>
@@ -400,86 +402,145 @@ export default function PropResultsPage() {
 
       {/* ── Results Table ── */}
       {view === "table" && rows.length > 0 && (
-        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-          {/* Table header */}
-          <div style={{ display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
-            <span>Date</span>
-            <span />
-            <span>Player</span>
-            <span>Market</span>
-            <span>Side</span>
-            <span>Line</span>
-            <span>Score</span>
-            <span>Result</span>
-            <span>Odds</span>
-            <span>Matchup</span>
+        isMobile ? (
+          /* Mobile card layout */
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {rows.map(r => (
+              <div key={r.id} style={{
+                background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8,
+                padding: "10px 12px", opacity: r.is_active === 0 ? 0.45 : 1,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <PlayerHeadshot playerId={r.nba_player_id} size={32} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                      {r.player_name}
+                      {r.is_best_side === 1 && <span style={{ fontSize: 9, background: "var(--accent)", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700 }}>PICK</span>}
+                      {r.is_alternate === 1 && <span style={{ fontSize: 9, background: "#f0883e", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700 }}>ALT</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>{r.game_date} · {r.matchup ?? bookmakerLabel(r.bookmaker)}</div>
+                  </div>
+                  <ScoreBadge score={r.value_score ?? 0} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                  <span style={{ color: r.side === "under" ? "var(--orange)" : "var(--accent)", fontWeight: 600 }}>
+                    {(r.side ?? "over").toUpperCase()}
+                  </span>
+                  <span>{r.line} {r.market_label}</span>
+                  <span style={{ color: "var(--accent)" }}>{r.decimal_odds?.toFixed(2) ?? "—"}</span>
+                  <span style={{ marginLeft: "auto" }}>
+                    {r.leg_result ? <LegResultBadge result={r.leg_result} /> : <span style={{ color: "var(--muted)" }}>—</span>}
+                  </span>
+                </div>
+              </div>
+            ))}
           </div>
-          {rows.map(r => (
-            <div key={r.id} style={{
-              display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px",
-              gap: "0 8px", padding: "7px 12px", borderBottom: "1px solid var(--border)", fontSize: 13,
-              alignItems: "center", opacity: r.is_active === 0 ? 0.45 : 1,
-            }}>
-              <span style={{ fontSize: 11, color: "var(--muted)" }}>{r.game_date ?? "—"}</span>
-              <PlayerHeadshot playerId={r.nba_player_id} size={36} />
-              <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
-                {r.player_name}
-                {r.is_best_side === 1 && <span style={{ fontSize: 9, background: "var(--accent)", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>PICK</span>}
-                {r.is_alternate === 1 && <span style={{ fontSize: 9, background: "#f0883e", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>ALT</span>}
-              </span>
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>{r.market_label}</span>
-              <span style={{ fontSize: 11, color: r.side === "under" ? "var(--orange)" : "var(--accent)" }}>
-                {(r.side ?? "over").toUpperCase()}
-              </span>
-              <span>{r.line}</span>
-              <ScoreBadge score={r.value_score ?? 0} />
-              {r.leg_result ? (
-                <LegResultBadge result={r.leg_result} />
-              ) : (
-                <span style={{ fontSize: 11, color: "var(--muted)" }}>—</span>
-              )}
-              <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.decimal_odds?.toFixed(2) ?? "—"}</span>
-              <span style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {r.matchup ?? bookmakerLabel(r.bookmaker)}
-              </span>
+        ) : (
+          /* Desktop grid table */
+          <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+              <span>Date</span>
+              <span />
+              <span>Player</span>
+              <span>Market</span>
+              <span>Side</span>
+              <span>Line</span>
+              <span>Score</span>
+              <span>Result</span>
+              <span>Odds</span>
+              <span>Matchup</span>
             </div>
-          ))}
-        </div>
+            {rows.map(r => (
+              <div key={r.id} style={{
+                display: "grid", gridTemplateColumns: "90px 44px 160px 110px 60px 55px 60px 70px 60px 110px",
+                gap: "0 8px", padding: "7px 12px", borderBottom: "1px solid var(--border)", fontSize: 13,
+                alignItems: "center", opacity: r.is_active === 0 ? 0.45 : 1,
+              }}>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>{r.game_date ?? "—"}</span>
+                <PlayerHeadshot playerId={r.nba_player_id} size={36} />
+                <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
+                  {r.player_name}
+                  {r.is_best_side === 1 && <span style={{ fontSize: 9, background: "var(--accent)", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>PICK</span>}
+                  {r.is_alternate === 1 && <span style={{ fontSize: 9, background: "#f0883e", color: "#0d1117", padding: "1px 4px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>ALT</span>}
+                </span>
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>{r.market_label}</span>
+                <span style={{ fontSize: 11, color: r.side === "under" ? "var(--orange)" : "var(--accent)" }}>
+                  {(r.side ?? "over").toUpperCase()}
+                </span>
+                <span>{r.line}</span>
+                <ScoreBadge score={r.value_score ?? 0} />
+                {r.leg_result ? (
+                  <LegResultBadge result={r.leg_result} />
+                ) : (
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>—</span>
+                )}
+                <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.decimal_odds?.toFixed(2) ?? "—"}</span>
+                <span style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.matchup ?? bookmakerLabel(r.bookmaker)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )
       )}
 
       {/* ── By Player View ── */}
       {view === "players" && total > 0 && (
-        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-          {/* Header */}
-          <div style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 70px 70px 100px 80px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
-            <span />
-            <span>Player</span>
-            <span>Market</span>
-            <span>Graded</span>
-            <span>Hits</span>
-            <span style={{ minWidth: 160 }}>Hit Rate</span>
-            <span>Avg Score</span>
-          </div>
-          {byPlayer.map((p, i) => (
-            <div key={i} style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 70px 70px 100px 80px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 13, alignItems: "center" }}>
-              <PlayerHeadshot playerId={p.nba_player_id} size={36} />
-              <span style={{ fontWeight: 600 }}>{p.player}</span>
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>{p.market}</span>
-              <span style={{ color: "var(--muted)" }}>
-                {p.total}{(p.pending ?? 0) > 0 && <span style={{ fontSize: 10, color: "var(--orange)" }}> +{p.pending}</span>}
-              </span>
-              <span style={{ color: "var(--green)" }}>{p.hits}</span>
-              <div style={{ paddingRight: 16 }}>
-                {p.total > 0 ? (
-                  <PctBar pct={p.hit_pct} hits={p.hits} total={p.total} />
-                ) : (
-                  <span style={{ fontSize: 11, color: "var(--muted)" }}>pending</span>
-                )}
+        isMobile ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {byPlayer.map((p, i) => (
+              <div key={i} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <PlayerHeadshot playerId={p.nba_player_id} size={32} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.player}</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>{p.market}</div>
+                  </div>
+                  <ScoreBadge score={p.avg_score} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12 }}>
+                  <span style={{ color: "var(--muted)" }}>{p.total} graded</span>
+                  <span style={{ color: "var(--green)" }}>{p.hits} hits</span>
+                  {(p.pending ?? 0) > 0 && <span style={{ color: "var(--orange)" }}>+{p.pending} pending</span>}
+                  <span style={{ marginLeft: "auto", fontWeight: 600, color: p.hit_pct >= 60 ? "var(--green)" : p.hit_pct >= 45 ? "var(--accent)" : "var(--red)" }}>
+                    {p.total > 0 ? `${p.hit_pct}%` : "—"}
+                  </span>
+                </div>
               </div>
-              <ScoreBadge score={p.avg_score} />
+            ))}
+          </div>
+        ) : (
+          <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 70px 70px 100px 80px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+              <span />
+              <span>Player</span>
+              <span>Market</span>
+              <span>Graded</span>
+              <span>Hits</span>
+              <span style={{ minWidth: 160 }}>Hit Rate</span>
+              <span>Avg Score</span>
             </div>
-          ))}
-        </div>
+            {byPlayer.map((p, i) => (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 70px 70px 100px 80px", gap: "0 8px", padding: "8px 12px", borderBottom: "1px solid var(--border)", fontSize: 13, alignItems: "center" }}>
+                <PlayerHeadshot playerId={p.nba_player_id} size={36} />
+                <span style={{ fontWeight: 600 }}>{p.player}</span>
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>{p.market}</span>
+                <span style={{ color: "var(--muted)" }}>
+                  {p.total}{(p.pending ?? 0) > 0 && <span style={{ fontSize: 10, color: "var(--orange)" }}> +{p.pending}</span>}
+                </span>
+                <span style={{ color: "var(--green)" }}>{p.hits}</span>
+                <div style={{ paddingRight: 16 }}>
+                  {p.total > 0 ? (
+                    <PctBar pct={p.hit_pct} hits={p.hits} total={p.total} />
+                  ) : (
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>pending</span>
+                  )}
+                </div>
+                <ScoreBadge score={p.avg_score} />
+              </div>
+            ))}
+          </div>
+        )
       )}
 
       {!loaded && (
