@@ -203,6 +203,59 @@ def get_player_game_log_prev_season(
     return get_player_game_log(player_id, season=season)
 
 
+def get_player_game_log_blended(
+    player_id: int,
+    season: str | None = None,
+) -> pd.DataFrame:
+    """
+    Return a blended game log combining regular season + playoff games.
+
+    During playoffs (April–June), playoff games get PLAYOFF_WEIGHT applied so
+    they contribute proportionally more to hit-rate and average calculations.
+    Regular season games always get weight 1.0.
+
+    Added columns on the returned DataFrame:
+        PLAYOFF_WEIGHT   — 1.0 for RS games, config.PLAYOFF_GAME_WEIGHT for playoff games
+        IS_PLAYOFF_GAME  — bool flag to identify source
+    """
+    if season is None:
+        season = config.DEFAULT_SEASON
+
+    df_rs = get_player_game_log(player_id, season=season, season_type="Regular Season")
+
+    if not config.is_playoffs():
+        # Regular season / off-season — no blending needed, just tag the weight column
+        if not df_rs.empty:
+            df_rs = df_rs.copy()
+            df_rs["PLAYOFF_WEIGHT"] = 1.0
+            df_rs["IS_PLAYOFF_GAME"] = False
+        return df_rs
+
+    # Playoffs active — fetch playoff games too
+    df_po = get_player_game_log(player_id, season=season, season_type="Playoffs")
+
+    if not df_rs.empty:
+        df_rs = df_rs.copy()
+        df_rs["PLAYOFF_WEIGHT"] = 1.0
+        df_rs["IS_PLAYOFF_GAME"] = False
+
+    if not df_po.empty:
+        df_po = df_po.copy()
+        df_po["PLAYOFF_WEIGHT"] = config.PLAYOFF_GAME_WEIGHT
+        df_po["IS_PLAYOFF_GAME"] = True
+
+    frames = [f for f in [df_rs, df_po] if not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    if len(frames) == 1:
+        return frames[0]
+
+    df = pd.concat(frames, ignore_index=True)
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="mixed")
+    df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+    return df
+
+
 def _add_computed_stats(df: pd.DataFrame) -> pd.DataFrame:
     """Add combo stat columns used by multi-stat prop markets."""
     if {"PTS", "REB", "AST"}.issubset(df.columns):
@@ -237,7 +290,22 @@ def _get_overtime_game_ids(season: str | None = None) -> set[str]:
         )
         tdf = log.league_game_log.get_data_frame()
     except Exception:
-        return set()
+        tdf = pd.DataFrame()
+
+    # During playoffs also include playoff OT games
+    if config.is_playoffs():
+        try:
+            _sleep()
+            log_po = LeagueGameLog(
+                season=season,
+                player_or_team_abbreviation="T",
+                season_type_all_star="Playoffs",
+            )
+            tdf_po = log_po.league_game_log.get_data_frame()
+            if not tdf_po.empty:
+                tdf = pd.concat([tdf, tdf_po], ignore_index=True) if not tdf.empty else tdf_po
+        except Exception:
+            pass
 
     if tdf.empty:
         return set()

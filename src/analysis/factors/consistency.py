@@ -46,10 +46,18 @@ def compute(
 
     valid = valid.head(10)
     values = valid[stat_col].tolist()
-    weights = config.RECENCY_WEIGHTS_10[: len(values)]
-    # Normalise weights in case we have fewer than 10 games
-    w_sum = sum(weights)
-    weights = [w / w_sum for w in weights]
+
+    # Combine positional recency weights with per-game playoff boost.
+    # Playoff games (PLAYOFF_WEIGHT > 1.0) pull the weighted hit-rate and
+    # mean toward recent playoff performance without discarding RS history.
+    recency = config.RECENCY_WEIGHTS_10[: len(values)]
+    if "PLAYOFF_WEIGHT" in valid.columns:
+        po_boost = valid["PLAYOFF_WEIGHT"].tolist()[: len(values)]
+    else:
+        po_boost = [1.0] * len(values)
+    combined = [r * p for r, p in zip(recency, po_boost)]
+    w_sum = sum(combined)
+    weights = [w / w_sum for w in combined]
 
     if not values:
         return FactorResult(
@@ -105,6 +113,8 @@ def compute(
     hit_count = sum(hits)
     total = len(values)
     ot_flag = " (OT games excluded)" if "IS_OT" in df.columns else ""
+    po_games = int(valid.get("IS_PLAYOFF_GAME", pd.Series([False] * len(valid))).sum())
+    po_flag = f", {po_games} playoff" if po_games > 0 else ""
     if side == "under":
         bound_label = f"Ceiling={round(ceiling_value, 1)} {'✓ below line' if ceiling_value < line else '✗ above line'}"
         direction_label = f"{hit_count}/{total} stayed below {line} (line)"
@@ -114,7 +124,7 @@ def compute(
         direction_label = f"{hit_count}/{total} exceeded {line} (line)"
     mean_vs_line = "above" if weighted_mean >= line else "below"
     evidence = [
-        f"Last {total} games{ot_flag}: {vals_str}",
+        f"Last {total} games{ot_flag}{po_flag}: {vals_str}",
         direction_label,
         f"Mean={round(weighted_mean, 1)} ({mean_vs_line} {line}), {bound_label}",
         f"Weighted hit rate: {weighted_hit_rate:.0%}",

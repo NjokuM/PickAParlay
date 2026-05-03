@@ -6,6 +6,7 @@ If they diverge significantly (>15%), uses the rolling 20-game avg as primary.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 import config
@@ -43,12 +44,24 @@ def compute(
         df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="mixed")
         df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
 
-    full_avg = float(df[stat_col].mean())
+    # Use playoff-weighted average when blended data is present so that
+    # playoff games (PLAYOFF_WEIGHT > 1.0) pull the season average toward
+    # the player's actual playoff-era form.
+    if "PLAYOFF_WEIGHT" in df.columns and df["PLAYOFF_WEIGHT"].nunique() > 1:
+        full_avg = float(np.average(df[stat_col], weights=df["PLAYOFF_WEIGHT"]))
+    else:
+        full_avg = float(df[stat_col].mean())
     games_played = len(df)
 
     # Rolling 20-game average for role-change detection
     rolling_df = df.head(config.ROLE_CHANGE_WINDOW)
-    rolling_avg = float(rolling_df[stat_col].mean()) if len(rolling_df) >= 5 else full_avg
+    if len(rolling_df) >= 5:
+        if "PLAYOFF_WEIGHT" in rolling_df.columns and rolling_df["PLAYOFF_WEIGHT"].nunique() > 1:
+            rolling_avg = float(np.average(rolling_df[stat_col], weights=rolling_df["PLAYOFF_WEIGHT"]))
+        else:
+            rolling_avg = float(rolling_df[stat_col].mean())
+    else:
+        rolling_avg = full_avg
 
     # Detect role change
     role_changed = False
@@ -101,8 +114,10 @@ def compute(
             f"Role change detected — season avg {full_avg:.1f} vs recent {rolling_avg:.1f} "
             f"(using last {config.ROLE_CHANGE_WINDOW} games)"
         )
+    po_games = int(df.get("IS_PLAYOFF_GAME", pd.Series([False] * len(df))).sum()) if "IS_PLAYOFF_GAME" in df.columns else 0
+    blend_note = f" [{po_games} playoff, {games_played - po_games} RS, weighted {config.PLAYOFF_GAME_WEIGHT}x]" if po_games > 0 else ""
     evidence.append(
-        f"Season avg: {full_avg:.1f} pts ({games_played} games) | "
+        f"Season avg: {full_avg:.1f}{blend_note} ({games_played} games) | "
         f"Using: {primary_avg:.1f} | Line: {line}"
     )
     evidence.append(verdict)

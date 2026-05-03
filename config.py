@@ -31,6 +31,15 @@ DEFAULT_SEASON: str = _nba_season(0)    # e.g. "2025-26"
 PREV_SEASON:    str = _nba_season(-1)   # e.g. "2024-25"
 
 # ---------------------------------------------------------------------------
+# Playoff detection & blending
+# ---------------------------------------------------------------------------
+PLAYOFF_GAME_WEIGHT: float = 1.35   # Playoff games count 35% more than RS games in all factor calcs
+
+def is_playoffs() -> bool:
+    """Auto-detect NBA playoffs — April through June."""
+    return date.today().month in (4, 5, 6)
+
+# ---------------------------------------------------------------------------
 # API Keys — supports a pool of keys for automatic rotation
 # Set ODDS_API_KEYS="key1,key2,key3" or fall back to single ODDS_API_KEY
 # ---------------------------------------------------------------------------

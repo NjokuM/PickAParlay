@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.models import PlayerProp, ValuedProp, FactorResult, InjuryReport
 from src.api.nba_stats import (
     get_player_game_log,
+    get_player_game_log_blended,
     get_h2h_record,
     get_team_recent_form,
     get_player_current_team,
@@ -57,8 +58,8 @@ def grade_prop(
     compute_fn = market_cfg["compute"]
     stat_col = market_cfg["stat_key"] if callable(compute_fn) else compute_fn
 
-    # --- Fetch game log FIRST so we can exit early before any team API calls ---
-    df_raw = get_player_game_log(prop.nba_player_id, season=season)
+    # --- Fetch blended game log (RS + playoff if active) so we can exit early ---
+    df_raw = get_player_game_log_blended(prop.nba_player_id, season=season)
     if df_raw.empty or len(df_raw) < config.MIN_GAMES_PLAYED:
         return None
 
