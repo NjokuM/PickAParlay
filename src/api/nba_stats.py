@@ -16,6 +16,7 @@ _ET = ZoneInfo("America/New_York")
 import pandas as pd
 from nba_api.stats.endpoints import (
     ScoreboardV2,
+    ScoreboardV3,
     PlayerGameLog,
     PlayerCareerStats,
     LeagueDashTeamStats,
@@ -104,33 +105,50 @@ def get_todays_games(force_fresh: bool = False) -> list[NBAGame]:
 
     _sleep()
     try:
-        board = ScoreboardV2(game_date=date_str)
-        games_df = board.game_header.get_data_frame()
+        # ScoreboardV2 is broken for the 2025-26 playoff season — use V3.
+        board = ScoreboardV3(game_date=date_str, league_id="00")
+        games_df = board.data_sets[1].get_data_frame()   # game_header
+        teams_df = board.data_sets[2].get_data_frame()   # team rows (2 per game)
     except Exception:
         return []
 
-    now_utc = datetime.now(timezone.utc)
-
     results: list[NBAGame] = []
     for _, row in games_df.iterrows():
-        # Skip in-progress and finished games
-        if _game_has_started(row, now_utc):
+        # gameStatus: 1=not started, 2=live, 3=final — skip live/final
+        if str(row.get("gameStatus", "1")) in ("2", "3"):
             continue
 
-        home_team_id = int(row["HOME_TEAM_ID"])
-        visitor_team_id = int(row["VISITOR_TEAM_ID"])
+        game_id = str(row["gameId"])
 
-        home_abbr = _team_id_to_abbr(home_team_id)
-        away_abbr = _team_id_to_abbr(visitor_team_id)
+        # gameCode format: YYYYMMDD/AWAYHOME  e.g. "20260508/NYKPHI"
+        game_code = str(row.get("gameCode", ""))
+        if "/" in game_code:
+            tricode_pair = game_code.split("/")[1]   # "NYKPHI"
+            away_tricode = tricode_pair[:3]           # "NYK"
+            home_tricode = tricode_pair[3:]           # "PHI"
+        else:
+            continue   # malformed, skip
+
+        # Resolve team IDs from the teams DataSet
+        game_teams = teams_df[teams_df["gameId"] == game_id]
+        home_team_id = away_team_id = None
+        for _, trow in game_teams.iterrows():
+            if trow["teamTricode"] == home_tricode:
+                home_team_id = int(trow["teamId"])
+            elif trow["teamTricode"] == away_tricode:
+                away_team_id = int(trow["teamId"])
+
+        if home_team_id is None or away_team_id is None:
+            continue
 
         game = NBAGame(
-            game_id=str(row["GAME_ID"]),
-            home_team=home_abbr or str(home_team_id),
-            away_team=away_abbr or str(visitor_team_id),
+            game_id=game_id,
+            home_team=home_tricode,
+            away_team=away_tricode,
             home_team_id=home_team_id,
-            away_team_id=visitor_team_id,
+            away_team_id=away_team_id,
             game_date=date_str,
-            game_time_utc=str(row.get("GAME_DATE_EST", "")),
+            game_time_utc=str(row.get("gameTimeUTC", "")),
             odds_event_id="",
         )
         results.append(game)
@@ -140,9 +158,8 @@ def get_todays_games(force_fresh: bool = False) -> list[NBAGame]:
 
 
 def _game_has_started(row: Any, now_utc: datetime) -> bool:
-    """Return True if game is in progress or already finished."""
+    """Return True if game is in progress or already finished (legacy, kept for reference)."""
     status = str(row.get("GAME_STATUS_ID", "1"))
-    # 1 = not started, 2 = in progress, 3 = final
     return status in ("2", "3")
 
 
