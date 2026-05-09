@@ -77,38 +77,34 @@ _COMBO_COMPONENTS: dict[str, list[str]] = {
 
 def fetch_game_info_for_date(game_date: str) -> list[dict]:
     """
-    Return game info dicts for the given date.
+    Return game info dicts for the given date using ScoreboardV3.
     Each dict: {"game_id": str, "status_id": int}
-    Status: 1 = not started, 2 = in progress, 3 = final.
-    """
-    from nba_api.stats.endpoints import scoreboardv2
+    Status: 1 = not started, 2 = live, 3 = final.
 
-    # ScoreboardV2 wants MM/DD/YYYY format
-    if "-" in game_date:
-        parts = game_date.split("-")
-        date_fmt = f"{parts[1]}/{parts[2]}/{parts[0]}"
-    else:
-        date_fmt = game_date
+    ScoreboardV2 is broken for the 2025-26 playoff season (returns 0 rows).
+    ScoreboardV3 uses YYYY-MM-DD format and works for both regular season and playoffs.
+    """
+    from nba_api.stats.endpoints import ScoreboardV3
+
+    # Normalise to YYYY-MM-DD (ScoreboardV3 format)
+    if "/" in game_date:
+        parts = game_date.split("/")
+        # Assume MM/DD/YYYY → YYYY-MM-DD
+        game_date = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
 
     time.sleep(config.NBA_API_SLEEP)
     try:
-        raw = scoreboardv2.ScoreboardV2(game_date=date_fmt).get_dict()
+        board = ScoreboardV3(game_date=game_date, league_id="00")
+        games_df = board.data_sets[1].get_data_frame()   # game_header
     except Exception:
-        return []   # API failure — return empty rather than crash
+        return []
 
     games: list[dict] = []
-    for rs in raw.get("resultSets", []):
-        if rs["name"] == "GameHeader":
-            try:
-                gid_idx = rs["headers"].index("GAME_ID")
-                status_idx = rs["headers"].index("GAME_STATUS_ID")
-            except ValueError:
-                continue
-            for row in rs["rowSet"]:
-                games.append({
-                    "game_id": row[gid_idx],
-                    "status_id": int(row[status_idx]),
-                })
+    for _, row in games_df.iterrows():
+        games.append({
+            "game_id": str(row["gameId"]),
+            "status_id": int(row.get("gameStatus", 1)),
+        })
     return games
 
 

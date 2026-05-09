@@ -86,6 +86,29 @@ def _scheduled_grade_results() -> None:
     t.start()
 
 
+def _scheduled_grade_results_tonight() -> None:
+    """
+    Late-night results check: grade any same-day games that have just finished.
+    Runs at 00:30 London (23:30 ET) — by then even late West Coast games are done.
+    Also re-grades yesterday in case the 6 AM run had any failures.
+    """
+    today_et = datetime.now(_ET).strftime("%Y-%m-%d")
+    yesterday_et = (datetime.now(_ET) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    with _results_lock:
+        if _results_state["status"] == "running":
+            print("[cron-night] Results check already running — skipping")
+            return
+
+    for game_date in [today_et, yesterday_et]:
+        print(f"[cron-night] Grading results for {game_date}")
+        t = threading.Thread(
+            target=_run_results_background, args=(game_date,), daemon=True
+        )
+        t.start()
+        t.join(timeout=300)  # wait up to 5 min per date before moving on
+
+
 def _scheduled_refresh() -> None:
     """Run a props refresh. Skip if already running or credits are low."""
     # Safety: skip if total pool credits < 50
@@ -123,6 +146,11 @@ def startup() -> None:
         replace_existing=True,
     )
     _scheduler.add_job(
+        _scheduled_grade_results_tonight,
+        "cron", hour=0, minute=30, id="grade_results_tonight",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
         _scheduled_refresh,
         "cron", hour=6, minute=20, id="morning_refresh",
         replace_existing=True,
@@ -133,7 +161,7 @@ def startup() -> None:
         replace_existing=True,
     )
     _scheduler.start()
-    print("[startup] Scheduler started — grade@06:00, refresh@06:20+18:00 (Europe/London)")
+    print("[startup] Scheduler started — grade@06:00+00:30, refresh@06:20+18:00 (Europe/London)")
 
 
 @app.on_event("shutdown")
