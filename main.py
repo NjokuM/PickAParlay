@@ -434,6 +434,16 @@ def refresh_cmd(season: str, verbose: bool) -> None:
         props_eligible=above_threshold,
     )
 
+    # Save individual props to graded_props so results checker works locally.
+    # (The backend API also does this — keeping them in sync means
+    #  'check results' returns real data whether you're running CLI or server.)
+    game_date = games[0].game_date if games else None
+    if game_date:
+        n_upserted = database.upsert_graded_props(all_valued_props, game_date)
+        display.console.print(
+            f"[green]✓ Saved {n_upserted} props to DB for results checking.[/green]"
+        )
+
     display.console.print(
         f"[green]✓ Cached {len(all_valued_props)} scored props "
         f"({above_threshold} above default threshold of {config.MIN_VALUE_SCORE}).[/green]"
