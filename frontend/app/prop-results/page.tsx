@@ -6,6 +6,7 @@ import { ScoreBadge, LegResultBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { bookmakerLabel } from "@/lib/bookmakers";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { isAdmin } from "@/lib/auth";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -13,10 +14,6 @@ function nDaysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
-}
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 // ─── Summary computations ─────────────────────────────────────────────────────
@@ -32,7 +29,7 @@ interface PlayerStat {
 function computeMarketStats(rows: PropResult[]): MarketStat[] {
   const acc: Record<string, { total: number; hits: number }> = {};
   for (const r of rows) {
-    if (r.leg_result == null) continue;          // skip ungraded
+    if (r.leg_result == null) continue;
     const m = r.market_label;
     if (!acc[m]) acc[m] = { total: 0, hits: 0 };
     acc[m].total++;
@@ -63,7 +60,7 @@ function computePlayerStats(rows: PropResult[]): PlayerStat[] {
       player:         v.player,
       market:         v.market,
       nba_player_id:  v.nba_player_id,
-      total:          v.graded,                     // graded count for hit-rate calc
+      total:          v.graded,
       hits:           v.hits,
       hit_pct:        v.graded ? Math.round(v.hits / v.graded * 100) : 0,
       avg_score:      Math.round(v.scores.reduce((a, b) => a + b, 0) / v.scores.length),
@@ -97,8 +94,11 @@ const MARKETS = [
 
 export default function PropResultsPage() {
   const isMobile = useIsMobile();
-  const [dateFrom,   setDateFrom]   = useState(nDaysAgo(7));
-  const [dateTo,     setDateTo]     = useState(today());
+  const yesterday = nDaysAgo(1);
+
+  // Filters — default to yesterday only
+  const [dateFrom,   setDateFrom]   = useState(yesterday);
+  const [dateTo,     setDateTo]     = useState(yesterday);
   const [player,     setPlayer]     = useState("");
   const [market,     setMarket]     = useState("");
   const [minScore,   setMinScore]   = useState(0);
@@ -113,11 +113,67 @@ export default function PropResultsPage() {
   const [loading,    setLoading]    = useState(false);
   const [loaded,     setLoaded]     = useState(false);
 
-  // ── Check Results state ─────────────────────────────────────────────────
-  const [checkDate,   setCheckDate]   = useState(nDaysAgo(1));
+  // Admin-only: Check Results state
+  const [checkDate,   setCheckDate]   = useState(yesterday);
   const [checkStatus, setCheckStatus] = useState<ResultsStatus | null>(null);
   const [checking,    setChecking]    = useState(false);
   const checkPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Cleanup poll on unmount
+  useEffect(() => () => {
+    if (checkPollRef.current) clearInterval(checkPollRef.current);
+  }, []);
+
+  async function load(overrides?: {
+    dateFrom?: string; dateTo?: string; player?: string; market?: string;
+    minScore?: number; side?: "" | "over" | "under"; result?: "" | "HIT" | "MISS";
+    picksOnly?: boolean; activeOnly?: boolean; gradedOnly?: boolean;
+    altFilter?: "regular" | "alt" | "all";
+  }) {
+    setLoading(true);
+    try {
+      const df   = overrides?.dateFrom   ?? dateFrom;
+      const dt   = overrides?.dateTo     ?? dateTo;
+      const pl   = overrides?.player     ?? player;
+      const mk   = overrides?.market     ?? market;
+      const ms   = overrides?.minScore   ?? minScore;
+      const sd   = overrides?.side       ?? side;
+      const rs   = overrides?.result     ?? result;
+      const po   = overrides?.picksOnly  ?? picksOnly;
+      const ao   = overrides?.activeOnly ?? activeOnly;
+      const go   = overrides?.gradedOnly ?? gradedOnly;
+      const af   = overrides?.altFilter  ?? altFilter;
+
+      const data = await api.propResults({
+        date_from:   df || undefined,
+        date_to:     dt || undefined,
+        player:      pl || undefined,
+        market:      mk || undefined,
+        min_score:   ms > 0 ? ms : undefined,
+        side:        sd || undefined,
+        result:      rs || undefined,
+        picks_only:  po  || undefined,
+        active_only: ao  || undefined,
+        graded_only: go,
+        alt_filter:  af,
+        limit: 5000,
+      });
+      setRows(data);
+      setLoaded(true);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Auto-load yesterday's results on mount
+  const hasAutoLoaded = useRef(false);
+  useEffect(() => {
+    if (hasAutoLoaded.current) return;
+    hasAutoLoaded.current = true;
+    load();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function autoCheck() {
     setChecking(true);
@@ -149,38 +205,7 @@ export default function PropResultsPage() {
     }
   }
 
-  // Cleanup poll on unmount
-  useEffect(() => () => {
-    if (checkPollRef.current) clearInterval(checkPollRef.current);
-  }, []);
-
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.propResults({
-        date_from:   dateFrom || undefined,
-        date_to:     dateTo   || undefined,
-        player:      player   || undefined,
-        market:      market   || undefined,
-        min_score:   minScore > 0 ? minScore : undefined,
-        side:        side     || undefined,
-        result:      result   || undefined,
-        picks_only:  picksOnly  || undefined,
-        active_only: activeOnly || undefined,
-        graded_only: gradedOnly,
-        alt_filter:  altFilter,
-        limit: 5000,
-      });
-      setRows(data);
-      setLoaded(true);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Summary stats — separate graded vs pending
+  // Summary stats
   const total    = rows.length;
   const graded   = rows.filter(r => r.leg_result != null).length;
   const hits     = rows.filter(r => r.leg_result === "HIT").length;
@@ -294,63 +319,62 @@ export default function PropResultsPage() {
         </div>
         <button
           style={{ ...btn(true), padding: "8px 20px", opacity: loading ? 0.6 : 1 }}
-          onClick={load} disabled={loading}
+          onClick={() => load()} disabled={loading}
         >
-          {loading ? "Loading…" : "Load Results"}
+          {loading ? "Loading…" : "Apply Filters"}
         </button>
       </div>
 
-      {/* ── Check Results control ── */}
-      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px", marginBottom: 20, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>Check Results</div>
-        <input
-          type="date"
-          value={checkDate}
-          onChange={e => setCheckDate(e.target.value)}
-          style={{ ...S, width: 140 }}
-        />
-        <button
-          style={{ ...btn(true), opacity: checking ? 0.6 : 1 }}
-          onClick={autoCheck}
-          disabled={checking}
-        >
-          {checking ? "Checking…" : "Check Results"}
-        </button>
-
-        {checkStatus && (
-          <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12 }}>
-            {checkStatus.status === "running" && (
-              <span style={{ color: "var(--accent)" }}>Fetching box scores…</span>
-            )}
-            {checkStatus.status === "done" && (
-              <>
-                <span style={{ color: "var(--green)", fontWeight: 600 }}>
-                  ✓ {checkStatus.hit} HIT / {checkStatus.miss} MISS
-                  {checkStatus.no_data > 0 && ` · ${checkStatus.no_data} no data`}
-                </span>
-                {checkStatus.slips_resolved > 0 && (
-                  <span style={{ color: "var(--accent)" }}>
-                    {checkStatus.slips_resolved} slip{checkStatus.slips_resolved !== 1 ? "s" : ""} auto-resolved
-                  </span>
-                )}
-              </>
-            )}
-            {checkStatus.status === "error" && (
-              <span style={{ color: "var(--red)" }}>Error: {checkStatus.error}</span>
-            )}
+      {/* Admin-only: Manual Check Results */}
+      {isAdmin() && (
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px", marginBottom: 20, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>
+            🔧 Check Results
+            <span style={{ fontSize: 11, fontWeight: 400, color: "var(--muted)", marginLeft: 6 }}>Admin</span>
           </div>
-        )}
+          <input
+            type="date"
+            value={checkDate}
+            onChange={e => setCheckDate(e.target.value)}
+            style={{ ...S, width: 140 }}
+          />
+          <button
+            style={{ ...btn(true), opacity: checking ? 0.6 : 1 }}
+            onClick={autoCheck}
+            disabled={checking}
+          >
+            {checking ? "Checking…" : "Check Results"}
+          </button>
 
-        {!checkStatus && loaded && pending > 0 && !checking && (
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>
-            {pending} props pending — select a date and check to grade them
-          </span>
-        )}
+          {checkStatus && (
+            <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12 }}>
+              {checkStatus.status === "running" && (
+                <span style={{ color: "var(--accent)" }}>Fetching box scores…</span>
+              )}
+              {checkStatus.status === "done" && (
+                <>
+                  <span style={{ color: "var(--green)", fontWeight: 600 }}>
+                    ✓ {checkStatus.hit} HIT / {checkStatus.miss} MISS
+                    {checkStatus.no_data > 0 && ` · ${checkStatus.no_data} no data`}
+                  </span>
+                  {checkStatus.slips_resolved > 0 && (
+                    <span style={{ color: "var(--accent)" }}>
+                      {checkStatus.slips_resolved} slip{checkStatus.slips_resolved !== 1 ? "s" : ""} auto-resolved
+                    </span>
+                  )}
+                </>
+              )}
+              {checkStatus.status === "error" && (
+                <span style={{ color: "var(--red)" }}>Error: {checkStatus.error}</span>
+              )}
+            </div>
+          )}
 
-        <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
-          Grades props from NBA box scores
+          <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
+            Grades props from NBA box scores
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Summary stats — only shown when data loaded */}
       {loaded && total > 0 && (
@@ -383,9 +407,12 @@ export default function PropResultsPage() {
         </div>
       )}
 
-      {loaded && total === 0 && (
+      {loaded && total === 0 && !loading && (
         <div style={{ color: "var(--muted)", padding: "40px 0", textAlign: "center", fontSize: 14 }}>
-          No graded props found for those filters. Try widening the date range or running Auto-Check Results in History.
+          No graded props found for yesterday yet.
+          {isAdmin() && (
+            <span> Use <strong style={{ color: "var(--text)" }}>Check Results</strong> above to grade them manually.</span>
+          )}
         </div>
       )}
 
@@ -543,9 +570,10 @@ export default function PropResultsPage() {
         )
       )}
 
-      {!loaded && (
+      {/* Initial loading skeleton */}
+      {!loaded && loading && (
         <div style={{ color: "var(--muted)", padding: "40px 0", textAlign: "center", fontSize: 14 }}>
-          Set filters and click <strong style={{ color: "var(--text)" }}>Load Results</strong> to view graded props.
+          Loading yesterday&apos;s results…
         </div>
       )}
     </div>
