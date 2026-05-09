@@ -345,7 +345,7 @@ def _run_refresh_background(season: str) -> None:
                 _log(f"  👤 Prefetched {prefetched}/{total_players} players (latest: {name})",
                      f"Prefetching player data ({prefetched}/{total_players})")
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             pool.map(_prefetch, unique_pids)
 
         _log(f"✅ Prefetched {total_players} players — grading {len(all_raw_props)} props")
@@ -357,8 +357,17 @@ def _run_refresh_background(season: str) -> None:
             _refresh_state["status"] = "grading"
 
         # 4b. Grade props (both OVER and UNDER sides) — fast now, all cache hits
-        #     Save incrementally every 50 props so progress survives crashes
-        all_valued_props: list[ValuedProp] = []
+        #     Save incrementally every 50 props so progress survives crashes.
+        #
+        #     Memory note: we NO LONGER keep ValuedProp objects alive after
+        #     serialisation. Each batch is converted to plain dicts immediately
+        #     (releasing factor DataFrames and nested objects) and only the
+        #     lightweight dict representation is retained for the final cache
+        #     write. This keeps peak RAM proportional to one batch rather than
+        #     the entire grading run.
+        all_prop_dicts: list[dict] = []   # serialised dicts only — much lighter
+        above_threshold = 0
+        graded_count = 0
         _current_player = ""
         _unsaved_batch: list[ValuedProp] = []
         game_date = games[0].game_date if games else None
@@ -374,40 +383,48 @@ def _run_refresh_background(season: str) -> None:
 
             vp_over = prop_grader.grade_prop(prop, injuries, season=season, side="over")
             if vp_over is not None:
-                all_valued_props.append(vp_over)
                 _unsaved_batch.append(vp_over)
             # Grade UNDER if a valid under price exists
             if prop.under_odds_decimal and prop.under_odds_decimal > 1.0:
                 vp_under = prop_grader.grade_prop(prop, injuries, season=season, side="under")
                 if vp_under is not None:
-                    all_valued_props.append(vp_under)
                     _unsaved_batch.append(vp_under)
             with _refresh_lock:
                 _refresh_state["props_graded"] = i + 1
 
-            # Incremental save — persist every BATCH_SIZE props to DB
+            # Flush batch: serialise → DB → cache checkpoint → free objects
             if len(_unsaved_batch) >= BATCH_SIZE and game_date:
+                batch_dicts = [dataclasses.asdict(vp) for vp in _unsaved_batch]
                 database.upsert_graded_props(_unsaved_batch, game_date)
+                above_threshold += sum(
+                    1 for vp in _unsaved_batch if vp.value_score >= config.MIN_VALUE_SCORE
+                )
+                graded_count += len(_unsaved_batch)
+                all_prop_dicts.extend(batch_dicts)
+                del _unsaved_batch, batch_dicts
+                gc.collect()
                 _unsaved_batch = []
 
-                # Also update cache file every 200 props so /api/props has data
+                # Checkpoint cache every ~200 props so /api/props has data
                 # even if refresh crashes before finishing
-                if len(all_valued_props) % 200 < BATCH_SIZE:
-                    cache.save_scored_props([dataclasses.asdict(vp) for vp in all_valued_props])
+                if len(all_prop_dicts) % 200 < BATCH_SIZE:
+                    cache.save_scored_props(all_prop_dicts)
 
-        # Save remaining props to DB
+        # Flush the final partial batch
         if _unsaved_batch and game_date:
+            batch_dicts = [dataclasses.asdict(vp) for vp in _unsaved_batch]
             database.upsert_graded_props(_unsaved_batch, game_date)
+            above_threshold += sum(
+                1 for vp in _unsaved_batch if vp.value_score >= config.MIN_VALUE_SCORE
+            )
+            graded_count += len(_unsaved_batch)
+            all_prop_dicts.extend(batch_dicts)
+            del _unsaved_batch, batch_dicts
+            gc.collect()
 
         # 5. Final cache save + invalidate in-memory cache
-        prop_dicts = [dataclasses.asdict(vp) for vp in all_valued_props]
-        cache.save_scored_props(prop_dicts)
+        cache.save_scored_props(all_prop_dicts)
         invalidate_props_cache()
-
-        above_threshold = sum(
-            1 for vp in all_valued_props if vp.value_score >= config.MIN_VALUE_SCORE
-        )
-        graded_count = len(all_valued_props)
 
         run_id = database.save_grading_run(
             season=season,
@@ -418,7 +435,7 @@ def _run_refresh_background(season: str) -> None:
         )
 
         # Free large objects now that everything is saved
-        del all_valued_props, all_raw_props, prop_dicts, _unsaved_batch
+        del all_prop_dicts, all_raw_props
         gc.collect()
 
         elapsed = (datetime.utcnow() - datetime.fromisoformat(_refresh_state["started_at"])).total_seconds()
