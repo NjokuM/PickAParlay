@@ -153,12 +153,30 @@ export interface SavedSlip {
 }
 
 export interface PickAnalytics {
-  picks: { total: number; hits: number; misses: number; hit_rate: number };
-  value_calibration: { bucket: number; total: number; hits: number }[];
+  picks: {
+    total: number; hits: number; misses: number; hit_rate: number;
+    // ROI / edge — null when no decimal_odds recorded yet
+    roi_pct: number | null;
+    implied_prob_pct: number | null;
+    edge_pct: number | null;
+    avg_decimal_odds: number | null;
+    picks_with_odds: number;
+  };
+  value_calibration: {
+    bucket: number; total: number; hits: number;
+    roi_pct: number | null;
+    avg_implied_prob: number | null;
+    edge_pct: number | null;
+  }[];
   factor_calibration: Record<string, { bucket: number; total: number; hits: number }[]>;
-  by_market: { market_label: string; total: number; hits: number }[];
+  by_market: {
+    market_label: string; total: number; hits: number;
+    roi_pct: number | null;
+    edge_pct: number | null;
+  }[];
   by_side: { side: string; total: number; hits: number }[];
   daily_trend: { game_date: string; total: number; hits: number }[];
+  daily_pnl: { game_date: string; day_roi_units: number; picks: number }[];
 }
 
 export interface Analytics extends PickAnalytics {

@@ -480,25 +480,63 @@ def _compute_pick_analytics(conn, is_alternate: int) -> dict:
         f"FROM graded_props WHERE leg_result IS NOT NULL"
         f" AND is_best_side = 1 AND is_alternate = {is_alternate}"
     )
+    # Reusable ROI expression (flat-stake units: HIT earns odds-1, MISS costs 1)
+    ROI_EXPR = "CASE WHEN leg_result = 'HIT' THEN decimal_odds - 1 ELSE -1.0 END"
+    # Guard: only include rows where odds are recorded and valid
+    HAS_ODDS  = "decimal_odds IS NOT NULL AND decimal_odds > 0"
 
-    total_picks = conn.execute(f"SELECT COUNT(*) {BASE}").fetchone()[0]
-    total_hits  = conn.execute(
-        f"SELECT COUNT(*) {BASE} AND leg_result = 'HIT'"
-    ).fetchone()[0]
-    total_miss  = total_picks - total_hits
+    # ── Summary: picks + ROI / edge metrics ──────────────────────
+    sr = conn.execute(
+        f"""SELECT
+               COUNT(*) AS total_picks,
+               SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS total_hits,
+               SUM(CASE WHEN {HAS_ODDS} THEN {ROI_EXPR} END) AS roi_units,
+               COUNT(CASE WHEN {HAS_ODDS} THEN 1 END)          AS picks_with_odds,
+               AVG(CASE WHEN {HAS_ODDS} THEN 1.0 / decimal_odds END) AS avg_implied_prob,
+               AVG(CASE WHEN {HAS_ODDS} THEN decimal_odds END)        AS avg_decimal_odds
+           {BASE}"""
+    ).fetchone()
 
-    # ── Value-score calibration (5-point buckets) ─────────────────
-    value_cal = conn.execute(
+    total_picks     = sr["total_picks"]     or 0
+    total_hits      = sr["total_hits"]      or 0
+    total_miss      = total_picks - total_hits
+    picks_with_odds = sr["picks_with_odds"] or 0
+    roi_units       = sr["roi_units"]           # may be None if no odds recorded
+    avg_impl        = sr["avg_implied_prob"]     # may be None
+    avg_dec_odds    = sr["avg_decimal_odds"]     # may be None
+
+    hit_rate = total_hits / total_picks if total_picks else 0
+    roi_pct  = round(roi_units / picks_with_odds * 100, 1) if (picks_with_odds and roi_units is not None) else None
+    impl_pct = round(avg_impl * 100, 1) if avg_impl else None
+    edge_pct = round((hit_rate - avg_impl) * 100, 1) if (avg_impl and total_picks) else None
+
+    # ── Value-score calibration (5-point buckets) with ROI/edge ──
+    vcal_rows = conn.execute(
         f"""SELECT
                CAST(value_score / 5 AS INTEGER) * 5 AS bucket,
                COUNT(*) AS total,
-               SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+               SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits,
+               SUM(CASE WHEN {HAS_ODDS} THEN {ROI_EXPR} END) AS roi_units,
+               COUNT(CASE WHEN {HAS_ODDS} THEN 1 END)          AS n_odds,
+               AVG(CASE WHEN {HAS_ODDS} THEN 1.0 / decimal_odds END) AS avg_implied_prob
            {BASE} AND value_score IS NOT NULL
            GROUP BY bucket
            ORDER BY bucket"""
     ).fetchall()
 
-    # ── Per-factor calibration (10-point buckets) ─────────────────
+    value_cal: list[dict] = []
+    for r in vcal_rows:
+        d = dict(r)
+        n_odds = d.pop("n_odds", 0) or 0
+        ru     = d.pop("roi_units", None)
+        ai     = d.pop("avg_implied_prob", None)
+        bhr    = d["hits"] / d["total"] if d["total"] else 0
+        d["roi_pct"]         = round(ru / n_odds * 100, 1) if (n_odds and ru is not None) else None
+        d["avg_implied_prob"]= round(ai, 3) if ai is not None else None
+        d["edge_pct"]        = round((bhr - ai) * 100, 1) if (ai is not None and d["total"]) else None
+        value_cal.append(d)
+
+    # ── Per-factor calibration (10-point buckets) — no odds needed ─
     factor_cols = [
         ("score_consistency",        "Consistency"),
         ("score_opponent_defense",   "Opponent Defense"),
@@ -522,15 +560,29 @@ def _compute_pick_analytics(conn, is_alternate: int) -> dict:
         ).fetchall()
         factor_calibration[label] = [dict(r) for r in rows]
 
-    # ── Hit rate by market ────────────────────────────────────────
-    by_market = conn.execute(
+    # ── Hit rate + ROI by market ──────────────────────────────────
+    mkt_rows = conn.execute(
         f"""SELECT market_label,
                    COUNT(*) AS total,
-                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits
+                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits,
+                   SUM(CASE WHEN {HAS_ODDS} THEN {ROI_EXPR} END) AS roi_units,
+                   COUNT(CASE WHEN {HAS_ODDS} THEN 1 END)          AS n_odds,
+                   AVG(CASE WHEN {HAS_ODDS} THEN 1.0 / decimal_odds END) AS avg_implied_prob
            {BASE}
            GROUP BY market_label
            ORDER BY hits * 1.0 / COUNT(*) DESC"""
     ).fetchall()
+
+    by_market: list[dict] = []
+    for r in mkt_rows:
+        d = dict(r)
+        n_odds = d.pop("n_odds", 0) or 0
+        ru     = d.pop("roi_units", None)
+        ai     = d.pop("avg_implied_prob", None)
+        mhr    = d["hits"] / d["total"] if d["total"] else 0
+        d["roi_pct"]  = round(ru / n_odds * 100, 1) if (n_odds and ru is not None) else None
+        d["edge_pct"] = round((mhr - ai) * 100, 1) if (ai is not None and d["total"]) else None
+        by_market.append(d)
 
     # ── Hit rate by side ──────────────────────────────────────────
     by_side = conn.execute(
@@ -541,7 +593,7 @@ def _compute_pick_analytics(conn, is_alternate: int) -> dict:
            GROUP BY side"""
     ).fetchall()
 
-    # ── Daily trend ───────────────────────────────────────────────
+    # ── Daily trend (hit rate per day) ────────────────────────────
     daily_trend = conn.execute(
         f"""SELECT game_date,
                    COUNT(*) AS total,
@@ -551,18 +603,36 @@ def _compute_pick_analytics(conn, is_alternate: int) -> dict:
            ORDER BY game_date"""
     ).fetchall()
 
+    # ── Daily P&L (for cumulative ROI chart) ─────────────────────
+    # Only includes days/picks where we have odds, so cumulative is accurate.
+    daily_pnl = conn.execute(
+        f"""SELECT game_date,
+                   SUM({ROI_EXPR}) AS day_roi_units,
+                   COUNT(*) AS picks
+           {BASE} AND {HAS_ODDS}
+           GROUP BY game_date
+           ORDER BY game_date"""
+    ).fetchall()
+
     return {
         "picks": {
-            "total": total_picks,
-            "hits": total_hits,
-            "misses": total_miss,
-            "hit_rate": round(total_hits / total_picks, 3) if total_picks else 0,
+            "total":            total_picks,
+            "hits":             total_hits,
+            "misses":           total_miss,
+            "hit_rate":         round(hit_rate, 3),
+            # ── New ROI / edge metrics ──
+            "roi_pct":          roi_pct,
+            "implied_prob_pct": impl_pct,
+            "edge_pct":         edge_pct,
+            "avg_decimal_odds": round(avg_dec_odds, 2) if avg_dec_odds else None,
+            "picks_with_odds":  picks_with_odds,
         },
-        "value_calibration": [dict(r) for r in value_cal],
+        "value_calibration": value_cal,
         "factor_calibration": factor_calibration,
-        "by_market": [dict(r) for r in by_market],
-        "by_side": [dict(r) for r in by_side],
+        "by_market":   by_market,
+        "by_side":     [dict(r) for r in by_side],
         "daily_trend": [dict(r) for r in daily_trend],
+        "daily_pnl":   [dict(r) for r in daily_pnl],
     }
 
 

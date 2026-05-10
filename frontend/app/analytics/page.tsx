@@ -45,7 +45,7 @@ export default function AnalyticsPage() {
   if (!data) return null;
 
   const section = analyticsView === "regular" ? data.regular : data.alt;
-  const { picks, value_calibration, factor_calibration, by_market, by_side, daily_trend } = section;
+  const { picks, value_calibration, factor_calibration, by_market, daily_trend, daily_pnl } = section;
   const { slips } = data;
   const noData = picks.total === 0;
 
@@ -67,22 +67,26 @@ export default function AnalyticsPage() {
     hits: r.hits,
   }));
 
-  const marketData = by_market.map(r => ({
-    name: r.market_label,
-    hit_pct: pct(r.hits, r.total),
-    total: r.total,
-    hits: r.hits,
-  }));
-
-  const overRow  = by_side.find(r => r.side === "over");
-  const underRow = by_side.find(r => r.side === "under");
-
   const trendData = daily_trend.map(r => ({
     date: r.game_date.slice(5),   // "MM-DD"
     hit_pct: pct(r.hits, r.total),
     total: r.total,
     hits: r.hits,
   }));
+
+  // Cumulative ROI chart data — running total of flat-stake units
+  const cumulativePnlData = daily_pnl.reduce<
+    { date: string; cumulative_roi: number; day_roi: number; picks: number }[]
+  >((acc, r) => {
+    const prev = acc.length > 0 ? acc[acc.length - 1].cumulative_roi : 0;
+    acc.push({
+      date: r.game_date.slice(5),
+      cumulative_roi: Math.round((prev + r.day_roi_units) * 10) / 10,
+      day_roi: Math.round(r.day_roi_units * 10) / 10,
+      picks: r.picks,
+    });
+    return acc;
+  }, []);
 
   // ── Factor summary: overall hit rate per factor's high-score bracket ──
   const factorSummary = FACTOR_ORDER.map(name => {
@@ -129,29 +133,48 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {/* ── KPI Row ── */}
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(5, 1fr)", gap: 12, marginBottom: 24 }}>
-        {[
-          { label: "Total Picks", value: picks.total, color: "var(--text)" },
-          { label: "Pick Hit Rate",
-            value: picks.total > 0 ? `${(picks.hit_rate * 100).toFixed(1)}%` : "—",
-            color: picks.hit_rate >= 0.55 ? "var(--green)" : picks.hit_rate >= 0.48 ? "var(--accent)" : "var(--red)" },
-          { label: "Hits / Misses", value: `${picks.hits} / ${picks.misses}`, color: "var(--text)" },
-          { label: "OVER Hit Rate",
-            value: overRow ? `${pct(overRow.hits, overRow.total)}%` : "—",
-            sub: overRow ? `(n=${overRow.total})` : "",
-            color: overRow && pct(overRow.hits, overRow.total) >= 55 ? "var(--green)" : "var(--accent)" },
-          { label: "UNDER Hit Rate",
-            value: underRow ? `${pct(underRow.hits, underRow.total)}%` : "—",
-            sub: underRow ? `(n=${underRow.total})` : "",
-            color: underRow && pct(underRow.hits, underRow.total) >= 55 ? "var(--green)" : "var(--accent)" },
-        ].map(({ label, value, color, sub }) => (
-          <div key={label} style={CARD}>
-            <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>{label}</div>
-            <div style={{ fontSize: 24, fontWeight: 700, color }}>{value}</div>
-            {sub && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{sub}</div>}
+      {/* ── Hero KPI Row — the 4 numbers that answer "does the model work?" ── */}
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
+        {/* Hit Rate */}
+        <div style={CARD}>
+          <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Hit Rate</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: picks.hit_rate >= 0.55 ? "var(--green)" : picks.hit_rate >= 0.50 ? "var(--accent)" : "var(--red)" }}>
+            {picks.total > 0 ? `${(picks.hit_rate * 100).toFixed(1)}%` : "—"}
           </div>
-        ))}
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+            {picks.hits} hits · {picks.misses} misses · {picks.total} picks
+          </div>
+        </div>
+        {/* Market Implied */}
+        <div style={CARD}>
+          <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Market Implied</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "var(--text)" }}>
+            {picks.implied_prob_pct != null ? `${picks.implied_prob_pct.toFixed(1)}%` : "—"}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+            {picks.avg_decimal_odds != null ? `avg odds ${picks.avg_decimal_odds.toFixed(2)}` : "breakeven probability"}
+          </div>
+        </div>
+        {/* Edge — THE number */}
+        <div style={{ ...CARD, borderColor: picks.edge_pct != null && picks.edge_pct > 0 ? "var(--green)" : picks.edge_pct != null && picks.edge_pct < 0 ? "var(--red)" : "var(--border)" }}>
+          <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Edge vs Market</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: picks.edge_pct != null ? picks.edge_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)" }}>
+            {picks.edge_pct != null ? `${picks.edge_pct > 0 ? "+" : ""}${picks.edge_pct.toFixed(1)}pp` : "—"}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+            hit rate − implied prob
+          </div>
+        </div>
+        {/* ROI */}
+        <div style={CARD}>
+          <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>ROI (flat stake)</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: picks.roi_pct != null ? picks.roi_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)" }}>
+            {picks.roi_pct != null ? `${picks.roi_pct > 0 ? "+" : ""}${picks.roi_pct.toFixed(1)}%` : "—"}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+            {picks.picks_with_odds > 0 ? `on ${picks.picks_with_odds} picks with odds` : "1 unit per pick"}
+          </div>
+        </div>
       </div>
 
       {noData ? (
@@ -160,6 +183,36 @@ export default function AnalyticsPage() {
         </div>
       ) : (
         <>
+          {/* ── Cumulative ROI Chart — the proof chart ── */}
+          {cumulativePnlData.length > 1 && (
+            <div style={{ ...CARD, marginBottom: 16 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Cumulative ROI</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+                Flat-stake returns over time (1 unit per pick, using actual odds). Trending up = model has edge.
+              </div>
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={cumulativePnlData} margin={{ left: 0, right: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="date" tick={{ fill: "var(--muted)", fontSize: 10 }} />
+                  <YAxis tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={v => `${v > 0 ? "+" : ""}${v}u`} />
+                  <Tooltip
+                    contentStyle={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6 }}
+                    formatter={(v: number | undefined) => [
+                      v != null ? `${v > 0 ? "+" : ""}${v} units` : "—",
+                      "Cumulative ROI",
+                    ]}
+                  />
+                  <ReferenceLine y={0} stroke="var(--muted)" strokeDasharray="4 4" />
+                  <Line
+                    type="monotone" dataKey="cumulative_roi"
+                    stroke={cumulativePnlData[cumulativePnlData.length - 1]?.cumulative_roi >= 0 ? "var(--green)" : "var(--red)"}
+                    strokeWidth={2} dot={false} name="cumulative_roi"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
           {/* ── Row 1: Value Score Calibration + Daily Trend ── */}
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
             {/* Value Score Calibration */}
@@ -183,17 +236,41 @@ export default function AnalyticsPage() {
                   <Bar dataKey="actual_pct" fill="var(--accent)" radius={[3, 3, 0, 0]} name="Hit %" />
                 </BarChart>
               </ResponsiveContainer>
-              {/* Sample size table */}
-              <div style={{ marginTop: 8 }}>
-                {valCalData.map(r => (
-                  <div key={r.bucket} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>
-                    <span>Score {r.bucket}</span>
-                    <span style={{ color: pctColor(r.actual_pct) }}>
-                      {r.actual_pct}% hit rate <span style={{ color: "var(--muted)" }}>(n={r.sample})</span>
-                    </span>
+              {/* Edge table — the clearest proof the scoring system has signal */}
+              {value_calibration.some(r => r.edge_pct != null) ? (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "60px 44px 70px 80px 60px 60px", gap: "0 4px", fontSize: 10, color: "var(--muted)", fontWeight: 600, padding: "4px 0", borderBottom: "1px solid var(--border)", marginBottom: 2 }}>
+                    <span>Score</span><span>Picks</span><span>Hit Rate</span><span>Implied</span><span>Edge</span><span>ROI</span>
                   </div>
-                ))}
-              </div>
+                  {[...value_calibration].reverse().map(r => {
+                    const hr = r.total ? Math.round(r.hits / r.total * 100) : 0;
+                    const edgeVal = r.edge_pct;
+                    const roiVal  = r.roi_pct;
+                    const edgeColor = edgeVal != null ? edgeVal > 0 ? "var(--green)" : "var(--red)" : "var(--muted)";
+                    return (
+                      <div key={r.bucket} style={{ display: "grid", gridTemplateColumns: "60px 44px 70px 80px 60px 60px", gap: "0 4px", fontSize: 11, padding: "3px 0", borderBottom: "1px solid var(--border)" }}>
+                        <span style={{ color: "var(--muted)" }}>{r.bucket}–{r.bucket + 4}</span>
+                        <span>{r.total}</span>
+                        <span style={{ color: pctColor(hr) }}>{hr}%</span>
+                        <span style={{ color: "var(--muted)" }}>{r.avg_implied_prob != null ? `${Math.round(r.avg_implied_prob * 100)}%` : "—"}</span>
+                        <span style={{ color: edgeColor, fontWeight: 600 }}>{edgeVal != null ? `${edgeVal > 0 ? "+" : ""}${edgeVal.toFixed(1)}pp` : "—"}</span>
+                        <span style={{ color: roiVal != null ? roiVal > 0 ? "var(--green)" : "var(--red)" : "var(--muted)" }}>{roiVal != null ? `${roiVal > 0 ? "+" : ""}${roiVal.toFixed(1)}%` : "—"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ marginTop: 8 }}>
+                  {valCalData.map(r => (
+                    <div key={r.bucket} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>
+                      <span>Score {r.bucket}</span>
+                      <span style={{ color: pctColor(r.actual_pct) }}>
+                        {r.actual_pct}% hit rate <span style={{ color: "var(--muted)" }}>(n={r.sample})</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Daily Trend */}
@@ -239,24 +316,35 @@ export default function AnalyticsPage() {
           {/* ── Row 2: Hit rate by Market + Factor Summary Table ── */}
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
             {/* Market breakdown */}
-            {marketData.length > 0 && (
+            {by_market.length > 0 && (
               <div style={CARD}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Hit Rate by Market</div>
-                <ResponsiveContainer width="100%" height={Math.max(200, marketData.length * 30)}>
-                  <BarChart data={marketData} layout="vertical" margin={{ left: 10, right: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis type="number" domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={v => `${v}%`} />
-                    <YAxis type="category" dataKey="name" tick={{ fill: "var(--muted)", fontSize: 11 }} width={100} />
-                    <Tooltip
-                      contentStyle={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6 }}
-                      formatter={(v, _, p) => [
-                        `${v}% (${(p.payload as Record<string, number>).hits}/${(p.payload as Record<string, number>).total})`, "Hit Rate"
-                      ]}
-                    />
-                    <ReferenceLine x={50} stroke="var(--muted)" strokeDasharray="4 4" />
-                    <Bar dataKey="hit_pct" fill="var(--accent)" radius={[0, 3, 3, 0]} name="Hit %" />
-                  </BarChart>
-                </ResponsiveContainer>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Hit Rate by Market</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Sorted by hit rate. Edge and ROI show where the model has the most value.</div>
+                {/* Table with edge + ROI */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 44px 70px 60px 60px", gap: "0 8px", fontSize: 10, color: "var(--muted)", fontWeight: 600, padding: "4px 0", borderBottom: "1px solid var(--border)", marginBottom: 2 }}>
+                  <span>Market</span><span>Picks</span><span>Hit Rate</span><span>Edge</span><span>ROI</span>
+                </div>
+                {by_market.map(r => {
+                  const hr = r.total ? Math.round(r.hits / r.total * 100) : 0;
+                  return (
+                    <div key={r.market_label} style={{ display: "grid", gridTemplateColumns: "1fr 44px 70px 60px 60px", gap: "0 8px", fontSize: 12, padding: "5px 0", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
+                      <span>{r.market_label}</span>
+                      <span style={{ color: "var(--muted)" }}>{r.total}</span>
+                      <div>
+                        <div style={{ height: 4, background: "var(--surface2)", borderRadius: 2, marginBottom: 2 }}>
+                          <div style={{ width: `${hr}%`, height: "100%", background: pctColor(hr), borderRadius: 2 }} />
+                        </div>
+                        <span style={{ fontSize: 10, color: pctColor(hr) }}>{hr}%</span>
+                      </div>
+                      <span style={{ fontWeight: 600, color: r.edge_pct != null ? r.edge_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)", fontSize: 11 }}>
+                        {r.edge_pct != null ? `${r.edge_pct > 0 ? "+" : ""}${r.edge_pct.toFixed(1)}pp` : "—"}
+                      </span>
+                      <span style={{ color: r.roi_pct != null ? r.roi_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)", fontSize: 11 }}>
+                        {r.roi_pct != null ? `${r.roi_pct > 0 ? "+" : ""}${r.roi_pct.toFixed(1)}%` : "—"}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
