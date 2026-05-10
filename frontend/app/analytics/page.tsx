@@ -95,8 +95,10 @@ export default function AnalyticsPage() {
     return acc;
   }, []);
 
-  // ── OVER side summary ────────────────────────────────────────────────
-  const overRow = by_side.find(r => r.side === "over");
+  // ── OVER / UNDER side summaries ────────────────────────────────────
+  const overRow  = by_side.find(r => r.side === "over");
+  const underRow = by_side.find(r => r.side === "under");
+  const impliedPct = picks.implied_prob_pct ?? 52.0; // market breakeven
 
   // ── Factor summary: overall hit rate per factor's high-score bracket ──
   const factorSummary = FACTOR_ORDER.map(name => {
@@ -209,38 +211,107 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {/* ── OVER Pick Track Record — most prominent section ── */}
-      {overRow && overRow.total > 0 && (
-        <div style={{ ...CARD, marginBottom: 16, borderColor: "var(--accent)", borderWidth: 2 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <span style={{ fontSize: 16, fontWeight: 700 }}>🔼 OVER Pick Track Record</span>
-            <span style={{ fontSize: 11, background: "var(--accent)", color: "#0d1117", borderRadius: 4, padding: "2px 8px", fontWeight: 600 }}>
-              {minScore}+ score
+      {/* ── Context note under hero (when OVER/UNDER edge diverge significantly) ── */}
+      {picks.total > 0 && overRow && underRow && (() => {
+        const oHr = pct(overRow.hits, overRow.total);
+        const uHr = pct(underRow.hits, underRow.total);
+        const gap = Math.abs(uHr - oHr);
+        if (gap >= 8) {
+          return (
+            <div style={{ marginBottom: 16, padding: "8px 14px", background: "rgba(240,185,11,0.07)", borderRadius: 6, borderLeft: "3px solid var(--accent)", fontSize: 12, color: "var(--muted)" }}>
+              ℹ️ The overall numbers above blend OVER and UNDER picks together.{" "}
+              <strong style={{ color: "var(--text)" }}>
+                OVER: {oHr}% · UNDER: {uHr}%
+              </strong>
+              {" "}— see the breakdown below.
+            </div>
+          );
+        }
+        return null;
+      })()}
+
+      {/* ── OVER vs UNDER Track Record — side-by-side ── */}
+      {(overRow || underRow) && (
+        <div style={{ ...CARD, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 15, fontWeight: 700 }}>Pick Performance by Side</span>
+            <span style={{ fontSize: 11, background: "var(--surface2)", color: "var(--muted)", borderRadius: 4, padding: "2px 8px" }}>
+              {minScore}+ score · market breakeven ≈ {impliedPct.toFixed(1)}%
             </span>
           </div>
-          <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted)" }}>
-            How the model&apos;s OVER recommendations have performed. These are the picks most users act on.
+          <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--muted)" }}>
+            OVER and UNDER picks are scored and recommended independently. Edge vs market is hit rate minus the bookmaker&apos;s implied probability.
           </p>
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(3, 1fr)", gap: 12 }}>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>OVER Picks</div>
-              <div style={{ fontSize: 26, fontWeight: 700 }}>{overRow.total}</div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Hit Rate</div>
-              <div style={{ fontSize: 26, fontWeight: 700, color: pctColor(pct(overRow.hits, overRow.total)) }}>
-                {pct(overRow.hits, overRow.total)}%
-              </div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Hits</div>
-              <div style={{ fontSize: 26, fontWeight: 700, color: "var(--green)" }}>{overRow.hits}</div>
-            </div>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+            {[
+              { label: "OVER", icon: "🔼", row: overRow },
+              { label: "UNDER", icon: "🔽", row: underRow },
+            ].map(({ label, icon, row }) => {
+              if (!row || row.total === 0) return (
+                <div key={label} style={{ ...CARD, padding: 16, opacity: 0.5 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{icon} {label} Picks</div>
+                  <div style={{ color: "var(--muted)", fontSize: 12 }}>No data</div>
+                </div>
+              );
+              const hr       = pct(row.hits, row.total);
+              const edgePp   = hr - impliedPct;
+              const isPos    = edgePp > 0;
+              const edgeColor = isPos ? "var(--green)" : "var(--red)";
+              return (
+                <div key={label} style={{
+                  ...CARD, padding: 16,
+                  borderColor: isPos ? "var(--green)" : "var(--border)",
+                  borderWidth: isPos ? 2 : 1,
+                }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: isPos ? "var(--green)" : "var(--text)" }}>
+                    {icon} {label} Picks
+                  </div>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: pctColor(hr), lineHeight: 1, marginBottom: 4 }}>
+                    {hr}%
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
+                    {row.hits} hits / {row.total} picks
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: edgeColor }}>
+                      {edgePp > 0 ? "+" : ""}{edgePp.toFixed(1)}pp
+                    </span>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>vs market implied</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-            The model scores OVER and UNDER independently — a higher-scored OVER means the model
-            sees stronger evidence the player will exceed the line.
-          </div>
+
+          {/* Insight callout when one side dominates */}
+          {(() => {
+            const oHr = overRow  ? pct(overRow.hits,  overRow.total)  : 0;
+            const uHr = underRow ? pct(underRow.hits, underRow.total) : 0;
+            const oEdge = oHr - impliedPct;
+            const uEdge = uHr - impliedPct;
+            if (underRow && underRow.total >= 20 && uEdge > 5 && uEdge - oEdge > 8) {
+              return (
+                <div style={{ marginTop: 12, padding: "10px 12px", background: "rgba(46,160,67,0.08)", borderRadius: 6, borderLeft: "3px solid var(--green)", fontSize: 12 }}>
+                  <strong style={{ color: "var(--green)" }}>💡 Model strength: UNDER picks</strong>
+                  <span style={{ color: "var(--muted)", marginLeft: 6 }}>
+                    UNDER recommendations are outperforming OVERs by {(uEdge - oEdge).toFixed(1)}pp vs the market.
+                    Focus on high-scored UNDER picks for the best edge.
+                  </span>
+                </div>
+              );
+            }
+            if (overRow && overRow.total >= 20 && oEdge > 5 && oEdge - uEdge > 8) {
+              return (
+                <div style={{ marginTop: 12, padding: "10px 12px", background: "rgba(46,160,67,0.08)", borderRadius: 6, borderLeft: "3px solid var(--green)", fontSize: 12 }}>
+                  <strong style={{ color: "var(--green)" }}>💡 Model strength: OVER picks</strong>
+                  <span style={{ color: "var(--muted)", marginLeft: 6 }}>
+                    OVER recommendations are outperforming UNDERs by {(oEdge - uEdge).toFixed(1)}pp vs the market.
+                  </span>
+                </div>
+              );
+            }
+            return null;
+          })()}
         </div>
       )}
 
