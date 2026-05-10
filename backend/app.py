@@ -1057,9 +1057,15 @@ def get_alt_props(
 
 
 @app.get("/api/analytics")
-def get_analytics() -> dict:
-    """Factor accuracy stats and P&L from all recorded outcomes."""
-    return database.get_analytics()
+def get_analytics(min_score: int = Query(default=65)) -> dict:
+    """
+    Factor accuracy stats and P&L from all recorded outcomes.
+
+    min_score (default 65) filters which picks are counted — only picks at or
+    above this threshold are included in hit rate / ROI / edge calculations.
+    The threshold_table in the response always spans 60–80 for comparison.
+    """
+    return database.get_analytics(min_score=min_score)
 
 
 @app.get("/api/credits")

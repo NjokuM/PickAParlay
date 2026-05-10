@@ -152,6 +152,16 @@ export interface SavedSlip {
   legs: SavedLeg[];
 }
 
+export interface ThresholdRow {
+  min_score: number;
+  total: number;
+  hits: number;
+  hit_rate_pct: number;
+  roi_pct: number | null;
+  implied_prob_pct: number | null;
+  edge_pct: number | null;
+}
+
 export interface PickAnalytics {
   picks: {
     total: number; hits: number; misses: number; hit_rate: number;
@@ -177,6 +187,8 @@ export interface PickAnalytics {
   by_side: { side: string; total: number; hits: number }[];
   daily_trend: { game_date: string; total: number; hits: number }[];
   daily_pnl: { game_date: string; day_roi_units: number; picks: number }[];
+  // Threshold comparison (60/65/70/75/80) — always present regardless of active min_score
+  threshold_table?: ThresholdRow[];
 }
 
 export interface Analytics extends PickAnalytics {
@@ -436,7 +448,10 @@ export const api = {
     }
   ) => patch<{ updated: boolean }>(`/api/history/${slipId}/outcome`, req),
 
-  analytics: () => get<Analytics>("/api/analytics"),
+  analytics: (minScore?: number) => {
+    const q = minScore != null ? `?min_score=${minScore}` : "";
+    return get<Analytics>(`/api/analytics${q}`);
+  },
 
   credits: () => get<Credits>("/api/credits"),
 

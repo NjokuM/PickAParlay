@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, Analytics } from "@/lib/api";
+import { isAdmin } from "@/lib/auth";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, ReferenceLine, CartesianGrid, Legend,
@@ -28,24 +29,30 @@ const FACTOR_ORDER = [
   "Season Avg", "Blowout Risk", "Volume & Usage",
 ];
 
+const THRESHOLD_OPTIONS = [60, 65, 70, 75, 80] as const;
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AnalyticsPage() {
   const isMobile = useIsMobile();
-  const [data, setData]       = useState<Analytics | null>(null);
-  const [loading, setLoading] = useState(true);
+  const admin = isAdmin();
+
+  const [data, setData]         = useState<Analytics | null>(null);
+  const [loading, setLoading]   = useState(true);
   const [activeFactor, setActiveFactor] = useState("Consistency");
   const [analyticsView, setAnalyticsView] = useState<"regular" | "alt">("regular");
+  const [minScore, setMinScore] = useState<number>(65);
 
   useEffect(() => {
-    api.analytics().then(setData).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+    setLoading(true);
+    api.analytics(minScore).then(setData).catch(() => {}).finally(() => setLoading(false));
+  }, [minScore]);
 
   if (loading) return <div style={{ color: "var(--muted)", padding: "60px 0", textAlign: "center" }}>Loading…</div>;
   if (!data) return null;
 
   const section = analyticsView === "regular" ? data.regular : data.alt;
-  const { picks, value_calibration, factor_calibration, by_market, daily_trend, daily_pnl } = section;
+  const { picks, value_calibration, factor_calibration, by_market, by_side, daily_trend, daily_pnl, threshold_table } = section;
   const { slips } = data;
   const noData = picks.total === 0;
 
@@ -88,6 +95,9 @@ export default function AnalyticsPage() {
     return acc;
   }, []);
 
+  // ── OVER side summary ────────────────────────────────────────────────
+  const overRow = by_side.find(r => r.side === "over");
+
   // ── Factor summary: overall hit rate per factor's high-score bracket ──
   const factorSummary = FACTOR_ORDER.map(name => {
     const buckets = factor_calibration[name] ?? [];
@@ -115,15 +125,18 @@ export default function AnalyticsPage() {
 
   return (
     <div>
+      {/* ── Header + Controls ── */}
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 700 }}>📈 Analytics</h1>
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>
           {analyticsView === "regular"
-            ? "Core model accuracy from regular picks (excludes alt lines)."
-            : "Alt-line accuracy from ladder picks."}
+            ? `Performance tracking for recommended picks (${minScore}+ score only).`
+            : `Alt-line accuracy from ladder picks (${minScore}+ score only).`}
           {noData && " Run a refresh then check results to see data here."}
         </p>
-        <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+
+        {/* Regular / Alt toggle */}
+        <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
           <button style={pill(analyticsView === "regular")} onClick={() => setAnalyticsView("regular")}>
             Regular Props
           </button>
@@ -131,6 +144,25 @@ export default function AnalyticsPage() {
             Alt Lines
           </button>
         </div>
+
+        {/* Min score threshold selector — admin only */}
+        {admin && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Min Score Threshold
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {THRESHOLD_OPTIONS.map(t => (
+                <button key={t} style={pill(minScore === t)} onClick={() => setMinScore(t)}>
+                  {t}+
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+              Only picks at or above this score count toward analytics. Default 65 = recommendation threshold.
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Hero KPI Row — the 4 numbers that answer "does the model work?" ── */}
@@ -177,6 +209,114 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      {/* ── OVER Pick Track Record — most prominent section ── */}
+      {overRow && overRow.total > 0 && (
+        <div style={{ ...CARD, marginBottom: 16, borderColor: "var(--accent)", borderWidth: 2 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 16, fontWeight: 700 }}>🔼 OVER Pick Track Record</span>
+            <span style={{ fontSize: 11, background: "var(--accent)", color: "#0d1117", borderRadius: 4, padding: "2px 8px", fontWeight: 600 }}>
+              {minScore}+ score
+            </span>
+          </div>
+          <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted)" }}>
+            How the model&apos;s OVER recommendations have performed. These are the picks most users act on.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(3, 1fr)", gap: 12 }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>OVER Picks</div>
+              <div style={{ fontSize: 26, fontWeight: 700 }}>{overRow.total}</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Hit Rate</div>
+              <div style={{ fontSize: 26, fontWeight: 700, color: pctColor(pct(overRow.hits, overRow.total)) }}>
+                {pct(overRow.hits, overRow.total)}%
+              </div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Hits</div>
+              <div style={{ fontSize: 26, fontWeight: 700, color: "var(--green)" }}>{overRow.hits}</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+            The model scores OVER and UNDER independently — a higher-scored OVER means the model
+            sees stronger evidence the player will exceed the line.
+          </div>
+        </div>
+      )}
+
+      {/* ── Threshold Comparison Table ── */}
+      {threshold_table && threshold_table.length > 0 && (
+        <div style={{ ...CARD, marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Score Threshold Comparison</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+            How performance changes as you raise the minimum score. Higher thresholds = fewer picks but more edge.
+            Highlighted row = current active threshold.
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--muted)", fontSize: 10, textTransform: "uppercase" }}>
+                  <th style={{ textAlign: "left", padding: "4px 8px", fontWeight: 600 }}>Min Score</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>Picks</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>Hit Rate</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>Implied</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>Edge</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>ROI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...threshold_table].reverse().map(row => {
+                  const isActive = row.min_score === minScore;
+                  const edgeColor = row.edge_pct != null
+                    ? row.edge_pct > 0 ? "var(--green)" : "var(--red)"
+                    : "var(--muted)";
+                  return (
+                    <tr
+                      key={row.min_score}
+                      style={{
+                        borderBottom: "1px solid var(--border)",
+                        background: isActive ? "rgba(240,185,11,0.08)" : "transparent",
+                        fontWeight: isActive ? 700 : 400,
+                      }}
+                    >
+                      <td style={{ padding: "6px 8px" }}>
+                        <span style={{
+                          display: "inline-flex", alignItems: "center", gap: 6,
+                        }}>
+                          {row.min_score}+
+                          {isActive && (
+                            <span style={{ fontSize: 9, background: "var(--accent)", color: "#0d1117", borderRadius: 3, padding: "1px 5px", fontWeight: 700 }}>
+                              active
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: "var(--muted)" }}>{row.total}</td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: pctColor(row.hit_rate_pct) }}>
+                        {row.total > 0 ? `${row.hit_rate_pct.toFixed(1)}%` : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: "var(--muted)" }}>
+                        {row.implied_prob_pct != null ? `${row.implied_prob_pct.toFixed(1)}%` : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: edgeColor, fontWeight: 600 }}>
+                        {row.edge_pct != null
+                          ? `${row.edge_pct > 0 ? "+" : ""}${row.edge_pct.toFixed(1)}pp`
+                          : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: row.roi_pct != null ? row.roi_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)" }}>
+                        {row.roi_pct != null
+                          ? `${row.roi_pct > 0 ? "+" : ""}${row.roi_pct.toFixed(1)}%`
+                          : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {noData ? (
         <div style={{ ...CARD, padding: "60px 20px", textAlign: "center", color: "var(--muted)" }}>
           No graded picks yet. Refresh props → let games finish → check results.
@@ -213,251 +353,255 @@ export default function AnalyticsPage() {
             </div>
           )}
 
-          {/* ── Row 1: Value Score Calibration + Daily Trend ── */}
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
-            {/* Value Score Calibration */}
-            <div style={CARD}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Value Score Calibration</div>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
-                Hit rate by value score bucket — does a higher score mean more hits?
-              </div>
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={valCalData} margin={{ left: 0, right: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="bucket" tick={{ fill: "var(--muted)", fontSize: 10 }} />
-                  <YAxis domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={v => `${v}%`} />
-                  <Tooltip
-                    contentStyle={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6 }}
-                    formatter={(v, _, p) => [
-                      `${v}% (${(p.payload as Record<string, number>).hits}/${(p.payload as Record<string, number>).sample})`, "Hit Rate"
-                    ]}
-                  />
-                  <ReferenceLine y={50} stroke="var(--muted)" strokeDasharray="4 4" label={{ value: "50%", fill: "var(--muted)", fontSize: 10 }} />
-                  <Bar dataKey="actual_pct" fill="var(--accent)" radius={[3, 3, 0, 0]} name="Hit %" />
-                </BarChart>
-              </ResponsiveContainer>
-              {/* Edge table — the clearest proof the scoring system has signal */}
-              {value_calibration.some(r => r.edge_pct != null) ? (
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "60px 44px 70px 80px 60px 60px", gap: "0 4px", fontSize: 10, color: "var(--muted)", fontWeight: 600, padding: "4px 0", borderBottom: "1px solid var(--border)", marginBottom: 2 }}>
-                    <span>Score</span><span>Picks</span><span>Hit Rate</span><span>Implied</span><span>Edge</span><span>ROI</span>
+          {/* ── Admin-only diagnostic sections ── */}
+          {admin && (
+            <>
+              {/* ── Row 1: Value Score Calibration + Daily Trend ── */}
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
+                {/* Value Score Calibration */}
+                <div style={CARD}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Value Score Calibration</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+                    Hit rate by value score bucket — does a higher score mean more hits?
                   </div>
-                  {[...value_calibration].reverse().map(r => {
-                    const hr = r.total ? Math.round(r.hits / r.total * 100) : 0;
-                    const edgeVal = r.edge_pct;
-                    const roiVal  = r.roi_pct;
-                    const edgeColor = edgeVal != null ? edgeVal > 0 ? "var(--green)" : "var(--red)" : "var(--muted)";
-                    return (
-                      <div key={r.bucket} style={{ display: "grid", gridTemplateColumns: "60px 44px 70px 80px 60px 60px", gap: "0 4px", fontSize: 11, padding: "3px 0", borderBottom: "1px solid var(--border)" }}>
-                        <span style={{ color: "var(--muted)" }}>{r.bucket}–{r.bucket + 4}</span>
-                        <span>{r.total}</span>
-                        <span style={{ color: pctColor(hr) }}>{hr}%</span>
-                        <span style={{ color: "var(--muted)" }}>{r.avg_implied_prob != null ? `${Math.round(r.avg_implied_prob * 100)}%` : "—"}</span>
-                        <span style={{ color: edgeColor, fontWeight: 600 }}>{edgeVal != null ? `${edgeVal > 0 ? "+" : ""}${edgeVal.toFixed(1)}pp` : "—"}</span>
-                        <span style={{ color: roiVal != null ? roiVal > 0 ? "var(--green)" : "var(--red)" : "var(--muted)" }}>{roiVal != null ? `${roiVal > 0 ? "+" : ""}${roiVal.toFixed(1)}%` : "—"}</span>
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart data={valCalData} margin={{ left: 0, right: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                      <XAxis dataKey="bucket" tick={{ fill: "var(--muted)", fontSize: 10 }} />
+                      <YAxis domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={v => `${v}%`} />
+                      <Tooltip
+                        contentStyle={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6 }}
+                        formatter={(v, _, p) => [
+                          `${v}% (${(p.payload as Record<string, number>).hits}/${(p.payload as Record<string, number>).sample})`, "Hit Rate"
+                        ]}
+                      />
+                      <ReferenceLine y={50} stroke="var(--muted)" strokeDasharray="4 4" label={{ value: "50%", fill: "var(--muted)", fontSize: 10 }} />
+                      <Bar dataKey="actual_pct" fill="var(--accent)" radius={[3, 3, 0, 0]} name="Hit %" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  {/* Edge table per score bucket */}
+                  {value_calibration.some(r => r.edge_pct != null) ? (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "60px 44px 70px 80px 60px 60px", gap: "0 4px", fontSize: 10, color: "var(--muted)", fontWeight: 600, padding: "4px 0", borderBottom: "1px solid var(--border)", marginBottom: 2 }}>
+                        <span>Score</span><span>Picks</span><span>Hit Rate</span><span>Implied</span><span>Edge</span><span>ROI</span>
                       </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div style={{ marginTop: 8 }}>
-                  {valCalData.map(r => (
-                    <div key={r.bucket} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>
-                      <span>Score {r.bucket}</span>
-                      <span style={{ color: pctColor(r.actual_pct) }}>
-                        {r.actual_pct}% hit rate <span style={{ color: "var(--muted)" }}>(n={r.sample})</span>
-                      </span>
+                      {[...value_calibration].reverse().map(r => {
+                        const hr = r.total ? Math.round(r.hits / r.total * 100) : 0;
+                        const edgeVal = r.edge_pct;
+                        const roiVal  = r.roi_pct;
+                        const edgeColor = edgeVal != null ? edgeVal > 0 ? "var(--green)" : "var(--red)" : "var(--muted)";
+                        return (
+                          <div key={r.bucket} style={{ display: "grid", gridTemplateColumns: "60px 44px 70px 80px 60px 60px", gap: "0 4px", fontSize: 11, padding: "3px 0", borderBottom: "1px solid var(--border)" }}>
+                            <span style={{ color: "var(--muted)" }}>{r.bucket}–{r.bucket + 4}</span>
+                            <span>{r.total}</span>
+                            <span style={{ color: pctColor(hr) }}>{hr}%</span>
+                            <span style={{ color: "var(--muted)" }}>{r.avg_implied_prob != null ? `${Math.round(r.avg_implied_prob * 100)}%` : "—"}</span>
+                            <span style={{ color: edgeColor, fontWeight: 600 }}>{edgeVal != null ? `${edgeVal > 0 ? "+" : ""}${edgeVal.toFixed(1)}pp` : "—"}</span>
+                            <span style={{ color: roiVal != null ? roiVal > 0 ? "var(--green)" : "var(--red)" : "var(--muted)" }}>{roiVal != null ? `${roiVal > 0 ? "+" : ""}${roiVal.toFixed(1)}%` : "—"}</span>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Daily Trend */}
-            <div style={CARD}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Daily Hit Rate Trend</div>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
-                How picks are performing day-over-day.
-              </div>
-              {trendData.length > 1 ? (
-                <ResponsiveContainer width="100%" height={240}>
-                  <LineChart data={trendData} margin={{ left: 0, right: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis dataKey="date" tick={{ fill: "var(--muted)", fontSize: 10 }} />
-                    <YAxis domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={v => `${v}%`} />
-                    <Tooltip
-                      contentStyle={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6 }}
-                      formatter={(v, _, p) => [
-                        `${v}% (${(p.payload as Record<string, number>).hits}/${(p.payload as Record<string, number>).total})`, "Hit Rate"
-                      ]}
-                    />
-                    <ReferenceLine y={50} stroke="var(--muted)" strokeDasharray="4 4" />
-                    <Line type="monotone" dataKey="hit_pct" stroke="var(--accent)" strokeWidth={2} dot={{ fill: "var(--accent)", r: 4 }} name="Hit %" />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 20 }}>
-                  {trendData.map(r => (
-                    <div key={r.date} style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-                      <span>{r.date}</span>
-                      <span style={{ color: pctColor(r.hit_pct), fontWeight: 600 }}>
-                        {r.hit_pct}% ({r.hits}/{r.total})
-                      </span>
-                    </div>
-                  ))}
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
-                    Line chart will appear after 2+ days of data.
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* ── Row 2: Hit rate by Market + Factor Summary Table ── */}
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
-            {/* Market breakdown */}
-            {by_market.length > 0 && (
-              <div style={CARD}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Hit Rate by Market</div>
-                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Sorted by hit rate. Edge and ROI show where the model has the most value.</div>
-                {/* Table with edge + ROI */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 44px 70px 60px 60px", gap: "0 8px", fontSize: 10, color: "var(--muted)", fontWeight: 600, padding: "4px 0", borderBottom: "1px solid var(--border)", marginBottom: 2 }}>
-                  <span>Market</span><span>Picks</span><span>Hit Rate</span><span>Edge</span><span>ROI</span>
-                </div>
-                {by_market.map(r => {
-                  const hr = r.total ? Math.round(r.hits / r.total * 100) : 0;
-                  return (
-                    <div key={r.market_label} style={{ display: "grid", gridTemplateColumns: "1fr 44px 70px 60px 60px", gap: "0 8px", fontSize: 12, padding: "5px 0", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
-                      <span>{r.market_label}</span>
-                      <span style={{ color: "var(--muted)" }}>{r.total}</span>
-                      <div>
-                        <div style={{ height: 4, background: "var(--surface2)", borderRadius: 2, marginBottom: 2 }}>
-                          <div style={{ width: `${hr}%`, height: "100%", background: pctColor(hr), borderRadius: 2 }} />
+                  ) : (
+                    <div style={{ marginTop: 8 }}>
+                      {valCalData.map(r => (
+                        <div key={r.bucket} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>
+                          <span>Score {r.bucket}</span>
+                          <span style={{ color: pctColor(r.actual_pct) }}>
+                            {r.actual_pct}% hit rate <span style={{ color: "var(--muted)" }}>(n={r.sample})</span>
+                          </span>
                         </div>
-                        <span style={{ fontSize: 10, color: pctColor(hr) }}>{hr}%</span>
-                      </div>
-                      <span style={{ fontWeight: 600, color: r.edge_pct != null ? r.edge_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)", fontSize: 11 }}>
-                        {r.edge_pct != null ? `${r.edge_pct > 0 ? "+" : ""}${r.edge_pct.toFixed(1)}pp` : "—"}
-                      </span>
-                      <span style={{ color: r.roi_pct != null ? r.roi_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)", fontSize: 11 }}>
-                        {r.roi_pct != null ? `${r.roi_pct > 0 ? "+" : ""}${r.roi_pct.toFixed(1)}%` : "—"}
-                      </span>
+                      ))}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Factor Summary Table */}
-            <div style={CARD}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Factor Performance Summary</div>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
-                Overall hit rate vs. high-score (60+) hit rate per factor.
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 0, fontSize: 11, color: "var(--muted)", padding: "6px 0", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>
-                <span>Factor</span>
-                <span>Overall</span>
-                <span>Score 60+</span>
-              </div>
-              {factorSummary.map(f => (
-                <div
-                  key={f.name}
-                  style={{
-                    display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 0,
-                    fontSize: 12, padding: "6px 0", borderBottom: "1px solid var(--border)",
-                    cursor: "pointer",
-                    background: activeFactor === f.name ? "var(--surface2)" : "transparent",
-                  }}
-                  onClick={() => setActiveFactor(f.name)}
-                >
-                  <span style={{ fontWeight: activeFactor === f.name ? 600 : 400 }}>{f.name}</span>
-                  <span style={{ color: pctColor(f.overall_pct) }}>
-                    {f.overall_pct}% <span style={{ color: "var(--muted)" }}>({f.overall_n})</span>
-                  </span>
-                  <span style={{ color: pctColor(f.high_pct) }}>
-                    {f.high_n > 0 ? `${f.high_pct}%` : "—"} <span style={{ color: "var(--muted)" }}>({f.high_n})</span>
-                  </span>
+                  )}
                 </div>
-              ))}
-              <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 8 }}>
-                Click a factor to see its calibration chart below.
-              </div>
-            </div>
-          </div>
 
-          {/* ── Row 3: Factor Calibration Chart ── */}
-          <div style={CARD}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>Factor Calibration: {activeFactor}</div>
-              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                {FACTOR_ORDER.map(f => (
-                  <button key={f} style={pill(activeFactor === f)} onClick={() => setActiveFactor(f)}>
-                    {f}
-                  </button>
-                ))}
+                {/* Daily Trend */}
+                <div style={CARD}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Daily Hit Rate Trend</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+                    How picks are performing day-over-day.
+                  </div>
+                  {trendData.length > 1 ? (
+                    <ResponsiveContainer width="100%" height={240}>
+                      <LineChart data={trendData} margin={{ left: 0, right: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                        <XAxis dataKey="date" tick={{ fill: "var(--muted)", fontSize: 10 }} />
+                        <YAxis domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={v => `${v}%`} />
+                        <Tooltip
+                          contentStyle={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6 }}
+                          formatter={(v, _, p) => [
+                            `${v}% (${(p.payload as Record<string, number>).hits}/${(p.payload as Record<string, number>).total})`, "Hit Rate"
+                          ]}
+                        />
+                        <ReferenceLine y={50} stroke="var(--muted)" strokeDasharray="4 4" />
+                        <Line type="monotone" dataKey="hit_pct" stroke="var(--accent)" strokeWidth={2} dot={{ fill: "var(--accent)", r: 4 }} name="Hit %" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 20 }}>
+                      {trendData.map(r => (
+                        <div key={r.date} style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                          <span>{r.date}</span>
+                          <span style={{ color: pctColor(r.hit_pct), fontWeight: 600 }}>
+                            {r.hit_pct}% ({r.hits}/{r.total})
+                          </span>
+                        </div>
+                      ))}
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+                        Line chart will appear after 2+ days of data.
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
-              If the factor is well-calibrated, actual hit rate (orange) should follow the ideal line (grey).
-              Divergence means the factor score doesn&apos;t predict hit rate at that level.
-            </div>
-            {activeFactorData.length > 0 ? (
-              <>
-                <ResponsiveContainer width="100%" height={250}>
-                  <LineChart data={activeFactorData} margin={{ left: 0, right: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis dataKey="bucket" tick={{ fill: "var(--muted)", fontSize: 10 }} />
-                    <YAxis domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={v => `${v}%`} />
-                    <Tooltip
-                      contentStyle={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6 }}
-                      formatter={(v) => [`${v}%`]}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 11, color: "var(--muted)" }} />
-                    <Line type="monotone" dataKey="actual_pct" stroke="var(--accent)" strokeWidth={2} dot={{ fill: "var(--accent)", r: 4 }} name="Actual Hit %" />
-                    <Line type="monotone" dataKey="ideal" stroke="var(--border)" strokeWidth={1} strokeDasharray="4 4" dot={false} name="Perfect Calibration" />
-                  </LineChart>
-                </ResponsiveContainer>
-                <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 24px" }}>
-                  {activeFactorData.map(r => (
-                    <div key={r.bucket} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)" }}>
-                      <span>{r.bucket}</span>
-                      <span style={{ color: pctColor(r.actual_pct) }}>
-                        {r.actual_pct}% <span style={{ color: "var(--muted)" }}>(n={r.sample})</span>
+
+              {/* ── Row 2: Hit rate by Market + Factor Summary Table ── */}
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
+                {/* Market breakdown */}
+                {by_market.length > 0 && (
+                  <div style={CARD}>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Hit Rate by Market</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Sorted by hit rate. Edge and ROI show where the model has the most value.</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 44px 70px 60px 60px", gap: "0 8px", fontSize: 10, color: "var(--muted)", fontWeight: 600, padding: "4px 0", borderBottom: "1px solid var(--border)", marginBottom: 2 }}>
+                      <span>Market</span><span>Picks</span><span>Hit Rate</span><span>Edge</span><span>ROI</span>
+                    </div>
+                    {by_market.map(r => {
+                      const hr = r.total ? Math.round(r.hits / r.total * 100) : 0;
+                      return (
+                        <div key={r.market_label} style={{ display: "grid", gridTemplateColumns: "1fr 44px 70px 60px 60px", gap: "0 8px", fontSize: 12, padding: "5px 0", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
+                          <span>{r.market_label}</span>
+                          <span style={{ color: "var(--muted)" }}>{r.total}</span>
+                          <div>
+                            <div style={{ height: 4, background: "var(--surface2)", borderRadius: 2, marginBottom: 2 }}>
+                              <div style={{ width: `${hr}%`, height: "100%", background: pctColor(hr), borderRadius: 2 }} />
+                            </div>
+                            <span style={{ fontSize: 10, color: pctColor(hr) }}>{hr}%</span>
+                          </div>
+                          <span style={{ fontWeight: 600, color: r.edge_pct != null ? r.edge_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)", fontSize: 11 }}>
+                            {r.edge_pct != null ? `${r.edge_pct > 0 ? "+" : ""}${r.edge_pct.toFixed(1)}pp` : "—"}
+                          </span>
+                          <span style={{ color: r.roi_pct != null ? r.roi_pct > 0 ? "var(--green)" : "var(--red)" : "var(--muted)", fontSize: 11 }}>
+                            {r.roi_pct != null ? `${r.roi_pct > 0 ? "+" : ""}${r.roi_pct.toFixed(1)}%` : "—"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Factor Summary Table */}
+                <div style={CARD}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Factor Performance Summary</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+                    Overall hit rate vs. high-score (60+) hit rate per factor.
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 0, fontSize: 11, color: "var(--muted)", padding: "6px 0", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>
+                    <span>Factor</span>
+                    <span>Overall</span>
+                    <span>Score 60+</span>
+                  </div>
+                  {factorSummary.map(f => (
+                    <div
+                      key={f.name}
+                      style={{
+                        display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 0,
+                        fontSize: 12, padding: "6px 0", borderBottom: "1px solid var(--border)",
+                        cursor: "pointer",
+                        background: activeFactor === f.name ? "var(--surface2)" : "transparent",
+                      }}
+                      onClick={() => setActiveFactor(f.name)}
+                    >
+                      <span style={{ fontWeight: activeFactor === f.name ? 600 : 400 }}>{f.name}</span>
+                      <span style={{ color: pctColor(f.overall_pct) }}>
+                        {f.overall_pct}% <span style={{ color: "var(--muted)" }}>({f.overall_n})</span>
+                      </span>
+                      <span style={{ color: pctColor(f.high_pct) }}>
+                        {f.high_n > 0 ? `${f.high_pct}%` : "—"} <span style={{ color: "var(--muted)" }}>({f.high_n})</span>
                       </span>
                     </div>
                   ))}
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 8 }}>
+                    Click a factor to see its calibration chart below.
+                  </div>
                 </div>
-              </>
-            ) : (
-              <div style={{ color: "var(--muted)", padding: 20, textAlign: "center", fontSize: 13 }}>
-                No data for {activeFactor} — check results first.
               </div>
-            )}
-          </div>
 
-          {/* ── Slip Stats (secondary) ── */}
-          {slips.total_slips > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)", marginBottom: 8 }}>Bet Slip Stats</div>
-              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 12 }}>
-                <div style={CARD}>
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Slips Recorded</div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>{slips.total_slips}</div>
-                </div>
-                <div style={CARD}>
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Slip Win Rate</div>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: slips.win_rate >= 0.5 ? "var(--green)" : "var(--red)" }}>
-                    {(slips.win_rate * 100).toFixed(1)}%
+              {/* ── Row 3: Factor Calibration Chart ── */}
+              <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>Factor Calibration: {activeFactor}</div>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    {FACTOR_ORDER.map(f => (
+                      <button key={f} style={pill(activeFactor === f)} onClick={() => setActiveFactor(f)}>
+                        {f}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <div style={CARD}>
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Total P&L</div>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: slips.total_pnl >= 0 ? "var(--green)" : "var(--red)" }}>
-                    {slips.total_pnl >= 0 ? "+" : ""}{slips.total_pnl.toFixed(2)}
-                  </div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+                  If the factor is well-calibrated, actual hit rate (orange) should follow the ideal line (grey).
+                  Divergence means the factor score doesn&apos;t predict hit rate at that level.
                 </div>
+                {activeFactorData.length > 0 ? (
+                  <>
+                    <ResponsiveContainer width="100%" height={250}>
+                      <LineChart data={activeFactorData} margin={{ left: 0, right: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                        <XAxis dataKey="bucket" tick={{ fill: "var(--muted)", fontSize: 10 }} />
+                        <YAxis domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={v => `${v}%`} />
+                        <Tooltip
+                          contentStyle={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6 }}
+                          formatter={(v) => [`${v}%`]}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11, color: "var(--muted)" }} />
+                        <Line type="monotone" dataKey="actual_pct" stroke="var(--accent)" strokeWidth={2} dot={{ fill: "var(--accent)", r: 4 }} name="Actual Hit %" />
+                        <Line type="monotone" dataKey="ideal" stroke="var(--border)" strokeWidth={1} strokeDasharray="4 4" dot={false} name="Perfect Calibration" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                    <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 24px" }}>
+                      {activeFactorData.map(r => (
+                        <div key={r.bucket} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)" }}>
+                          <span>{r.bucket}</span>
+                          <span style={{ color: pctColor(r.actual_pct) }}>
+                            {r.actual_pct}% <span style={{ color: "var(--muted)" }}>(n={r.sample})</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ color: "var(--muted)", padding: 20, textAlign: "center", fontSize: 13 }}>
+                    No data for {activeFactor} — check results first.
+                  </div>
+                )}
               </div>
-            </div>
+
+              {/* ── Slip Stats (secondary) ── */}
+              {slips.total_slips > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)", marginBottom: 8 }}>Bet Slip Stats</div>
+                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 12 }}>
+                    <div style={CARD}>
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Slips Recorded</div>
+                      <div style={{ fontSize: 20, fontWeight: 700 }}>{slips.total_slips}</div>
+                    </div>
+                    <div style={CARD}>
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Slip Win Rate</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: slips.win_rate >= 0.5 ? "var(--green)" : "var(--red)" }}>
+                        {(slips.win_rate * 100).toFixed(1)}%
+                      </div>
+                    </div>
+                    <div style={CARD}>
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Total P&L</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: slips.total_pnl >= 0 ? "var(--green)" : "var(--red)" }}>
+                        {slips.total_pnl >= 0 ? "+" : ""}{slips.total_pnl.toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </>
       )}

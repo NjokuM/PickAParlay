@@ -474,11 +474,59 @@ def record_leg_result(leg_id: int, result: str) -> None:
 # Analytics
 # ---------------------------------------------------------------------------
 
-def _compute_pick_analytics(conn, is_alternate: int) -> dict:
-    """Run all pick-level analytics queries scoped to regular (0) or alt (1) props."""
+def _threshold_table(conn, is_alternate: int) -> list[dict]:
+    """
+    Return hit rate, ROI, and edge at each standard score threshold
+    (60+, 65+, 70+, 75+, 80+).  This is always computed across ALL picks
+    regardless of whatever min_score filter is active on the main analytics,
+    so the table shows the full picture of where the model has edge.
+    """
+    ROI_EXPR = "CASE WHEN leg_result = 'HIT' THEN decimal_odds - 1 ELSE -1.0 END"
+    HAS_ODDS  = "decimal_odds IS NOT NULL AND decimal_odds > 0"
+    rows = []
+    for threshold in (60, 65, 70, 75, 80):
+        r = conn.execute(
+            f"""SELECT
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits,
+                   SUM(CASE WHEN {HAS_ODDS} THEN {ROI_EXPR} END)        AS roi_units,
+                   COUNT(CASE WHEN {HAS_ODDS} THEN 1 END)               AS n_odds,
+                   AVG(CASE WHEN {HAS_ODDS} THEN 1.0 / decimal_odds END) AS avg_impl
+               FROM graded_props
+               WHERE leg_result IS NOT NULL AND is_best_side = 1
+                 AND is_alternate = {is_alternate}
+                 AND value_score >= {threshold}"""
+        ).fetchone()
+        total    = r["total"] or 0
+        hits     = r["hits"]  or 0
+        n_odds   = r["n_odds"] or 0
+        roi_u    = r["roi_units"]
+        avg_impl = r["avg_impl"]
+        hit_rate = hits / total if total else 0
+        rows.append({
+            "min_score":       threshold,
+            "total":           total,
+            "hits":            hits,
+            "hit_rate_pct":    round(hit_rate * 100, 1),
+            "roi_pct":         round(roi_u / n_odds * 100, 1) if (n_odds and roi_u is not None) else None,
+            "implied_prob_pct":round(avg_impl * 100, 1) if avg_impl else None,
+            "edge_pct":        round((hit_rate - avg_impl) * 100, 1) if (avg_impl and total) else None,
+        })
+    return rows
+
+
+def _compute_pick_analytics(conn, is_alternate: int, min_score: int = 65) -> dict:
+    """
+    Run all pick-level analytics queries scoped to regular (0) or alt (1) props,
+    filtered to picks with value_score >= min_score.
+
+    Default min_score=65 reflects the minimum score worth recommending to users.
+    Including noise-level picks (50-60) would dilute all metrics toward 50%.
+    """
     BASE = (
         f"FROM graded_props WHERE leg_result IS NOT NULL"
         f" AND is_best_side = 1 AND is_alternate = {is_alternate}"
+        f" AND value_score >= {min_score}"
     )
     # Reusable ROI expression (flat-stake units: HIT earns odds-1, MISS costs 1)
     ROI_EXPR = "CASE WHEN leg_result = 'HIT' THEN decimal_odds - 1 ELSE -1.0 END"
@@ -636,15 +684,25 @@ def _compute_pick_analytics(conn, is_alternate: int) -> dict:
     }
 
 
-def get_analytics() -> dict:
+def get_analytics(min_score: int = 65) -> dict:
     """
     Return accuracy analytics split by regular vs alt props.
+
+    min_score filters which picks count toward analytics (default 65 = the
+    recommended threshold; picks below this score are not worth evaluating).
+    The threshold_table is always computed across all thresholds regardless
+    of the active min_score, giving the full picture in one response.
+
     Top-level keys 'regular' and 'alt' contain full analytics for each type.
     Backward-compat keys (picks, value_calibration, etc.) point to regular data.
     """
     with _connect() as conn:
-        regular = _compute_pick_analytics(conn, is_alternate=0)
-        alt     = _compute_pick_analytics(conn, is_alternate=1)
+        regular = _compute_pick_analytics(conn, is_alternate=0, min_score=min_score)
+        alt     = _compute_pick_analytics(conn, is_alternate=1, min_score=min_score)
+
+        # ── Threshold comparison table (always at all 5 levels) ───────
+        threshold_regular = _threshold_table(conn, is_alternate=0)
+        threshold_alt     = _threshold_table(conn, is_alternate=1)
 
         # ── Slip-level stats (not split — slips can mix types) ────────
         total_slips = conn.execute(
@@ -659,9 +717,9 @@ def get_analytics() -> dict:
         total_pnl = pnl_row[0] or 0.0
 
         return {
-            # ── New separated sections ────────────────────────────────
-            "regular": regular,
-            "alt":     alt,
+            # ── Separated sections (threshold_table included) ─────────
+            "regular": {**regular, "threshold_table": threshold_regular},
+            "alt":     {**alt,     "threshold_table": threshold_alt},
             # ── Backward-compatible keys (point to regular data) ──────
             "picks":              regular["picks"],
             "value_calibration":  regular["value_calibration"],
@@ -669,6 +727,7 @@ def get_analytics() -> dict:
             "by_market":          regular["by_market"],
             "by_side":            regular["by_side"],
             "daily_trend":        regular["daily_trend"],
+            "daily_pnl":          regular["daily_pnl"],
             # ── Slip stats (unchanged) ────────────────────────────────
             "slips": {
                 "total_slips": total_slips,
