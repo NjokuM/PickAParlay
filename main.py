@@ -439,9 +439,9 @@ def refresh_cmd(season: str, verbose: bool) -> None:
     #  'check results' returns real data whether you're running CLI or server.)
     game_date = games[0].game_date if games else None
     if game_date:
-        n_upserted = database.upsert_graded_props(all_valued_props, game_date)
+        upserted_ids = database.upsert_graded_props(all_valued_props, game_date)
         display.console.print(
-            f"[green]✓ Saved {n_upserted} props to DB for results checking.[/green]"
+            f"[green]✓ Saved {len(upserted_ids)} props to DB for results checking.[/green]"
         )
 
     display.console.print(

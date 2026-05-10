@@ -613,14 +613,27 @@ def get_analytics() -> dict:
 # Graded props — persistent storage
 # ---------------------------------------------------------------------------
 
-def upsert_graded_props(valued_props: list, game_date: str) -> int:
+def upsert_graded_props(
+    valued_props: list,
+    game_date: str,
+    mark_stale: bool = True,
+) -> list[int]:
     """
-    Insert or update ALL graded props for the given game date.
-    After upserting, marks stale props as inactive and computes is_best_side.
-    Returns count of rows upserted.
+    Insert or update graded props for the given game date.
+
+    mark_stale=True  (default): after upserting, marks props for game_date
+      that are NOT in this batch as inactive, and recomputes is_best_side.
+      Use this when the batch represents the COMPLETE set of props for the date.
+
+    mark_stale=False: upsert only — no stale-marking, no best_side update.
+      Use this for intermediate batches during a streaming refresh.  After all
+      batches are done, call finalize_graded_props() once with the full set of
+      upserted IDs to do the stale-marking and best_side pass in one shot.
+
+    Returns the list of row IDs that were inserted or updated.
     """
     if not valued_props:
-        return 0
+        return []
 
     with _connect() as conn:
         upserted_ids: list[int] = []
@@ -696,54 +709,125 @@ def upsert_graded_props(valued_props: list, game_date: str) -> int:
             # lastrowid returns the inserted id, or the existing id on conflict
             upserted_ids.append(cur.lastrowid)
 
-        # Determine whether this batch is alt or regular so we only
-        # mark stale / recompute best_side within the same type.
-        batch_is_alt = int(
-            getattr(valued_props[0].prop, "is_alternate", False)
-        ) if valued_props else 0
+        if mark_stale:
+            # Determine whether this batch is alt or regular so we only
+            # mark stale / recompute best_side within the same type.
+            batch_is_alt = int(
+                getattr(valued_props[0].prop, "is_alternate", False)
+            ) if valued_props else 0
+            _finalize_graded_props_conn(conn, game_date, upserted_ids, batch_is_alt)
 
-        # Mark stale: props of the SAME type for this date NOT in batch → inactive
-        if upserted_ids:
-            placeholders = ",".join("?" * len(upserted_ids))
-            conn.execute(
-                f"""UPDATE graded_props SET is_active = 0
-                    WHERE game_date = ? AND is_alternate = ?
-                      AND id NOT IN ({placeholders})""",
-                [game_date, batch_is_alt] + upserted_ids,
-            )
+    return upserted_ids
 
-        # Compute is_best_side within the SAME type only: for each
-        # (player, market, line, date), the side with higher value_score wins.
-        conn.execute(
-            "UPDATE graded_props SET is_best_side = 0 WHERE game_date = ? AND is_alternate = ?",
-            (game_date, batch_is_alt),
-        )
-        conn.execute(
-            """UPDATE graded_props SET is_best_side = 1
-               WHERE id IN (
-                   SELECT id FROM (
-                       SELECT id, ROW_NUMBER() OVER (
-                           PARTITION BY player_name, market, line, game_date
-                           ORDER BY value_score DESC
-                       ) rn
-                       FROM graded_props
-                       WHERE game_date = ? AND is_alternate = ?
-                   ) WHERE rn = 1
-               )""",
-            (game_date, batch_is_alt),
-        )
 
-    return len(upserted_ids)
+def finalize_graded_props(game_date: str, all_upserted_ids: list[int]) -> None:
+    """
+    Stale-mark + recompute is_best_side after a multi-batch refresh completes.
+
+    Call this ONCE after all upsert_graded_props(mark_stale=False) batch calls
+    are done, passing the combined list of every ID returned by those calls.
+    Props for game_date that are NOT in all_upserted_ids are marked inactive
+    (they belong to a previous refresh).  is_best_side is then recomputed for
+    all active props.
+    """
+    if not all_upserted_ids:
+        return
+    with _connect() as conn:
+        # Handle regular and alt props independently (same logic, different filter)
+        for is_alt in (0, 1):
+            _finalize_graded_props_conn(conn, game_date, all_upserted_ids, is_alt)
+
+
+def _finalize_graded_props_conn(
+    conn,
+    game_date: str,
+    upserted_ids: list[int],
+    batch_is_alt: int,
+) -> None:
+    """
+    Inner helper: mark stale and recompute is_best_side using an open connection.
+    Operates only on props matching batch_is_alt for game_date.
+    """
+    if not upserted_ids:
+        return
+
+    placeholders = ",".join("?" * len(upserted_ids))
+
+    # Mark stale: props of the SAME type for this date NOT in this ID set → inactive
+    conn.execute(
+        f"""UPDATE graded_props SET is_active = 0
+            WHERE game_date = ? AND is_alternate = ?
+              AND id NOT IN ({placeholders})""",
+        [game_date, batch_is_alt] + upserted_ids,
+    )
+
+    # Compute is_best_side within the SAME type only: for each
+    # (player, market, line, date), the side with higher value_score wins.
+    conn.execute(
+        "UPDATE graded_props SET is_best_side = 0 WHERE game_date = ? AND is_alternate = ?",
+        (game_date, batch_is_alt),
+    )
+    conn.execute(
+        """UPDATE graded_props SET is_best_side = 1
+           WHERE id IN (
+               SELECT id FROM (
+                   SELECT id, ROW_NUMBER() OVER (
+                       PARTITION BY player_name, market, line, game_date
+                       ORDER BY value_score DESC
+                   ) rn
+                   FROM graded_props
+                   WHERE game_date = ? AND is_alternate = ? AND is_active = 1
+               ) WHERE rn = 1
+           )""",
+        (game_date, batch_is_alt),
+    )
 
 
 def repair_deactivated_regular_props() -> int:
-    """One-time repair: restore regular props that were incorrectly marked
-    inactive by the old stale-marking bug (which didn't scope by is_alternate)."""
+    """
+    Repair: restore regular props incorrectly marked inactive by the batch-save
+    stale-marking bug (each intermediate batch deactivated all previous batches,
+    leaving only the final batch as active).
+
+    After reactivating, recomputes is_best_side for every affected game_date
+    so picks are correctly flagged.
+
+    Returns the number of rows reactivated.
+    """
     with _connect() as conn:
+        # Find affected dates before we change anything
+        affected = conn.execute(
+            "SELECT DISTINCT game_date FROM graded_props WHERE is_alternate = 0 AND is_active = 0"
+        ).fetchall()
+        affected_dates = [r[0] for r in affected]
+
         cur = conn.execute(
             "UPDATE graded_props SET is_active = 1 WHERE is_alternate = 0 AND is_active = 0"
         )
-        return cur.rowcount
+        repaired = cur.rowcount
+
+        # Recompute is_best_side for each affected date so picks are correct
+        for game_date in affected_dates:
+            conn.execute(
+                "UPDATE graded_props SET is_best_side = 0 WHERE game_date = ? AND is_alternate = 0",
+                (game_date,),
+            )
+            conn.execute(
+                """UPDATE graded_props SET is_best_side = 1
+                   WHERE id IN (
+                       SELECT id FROM (
+                           SELECT id, ROW_NUMBER() OVER (
+                               PARTITION BY player_name, market, line, game_date
+                               ORDER BY value_score DESC
+                           ) rn
+                           FROM graded_props
+                           WHERE game_date = ? AND is_alternate = 0 AND is_active = 1
+                       ) WHERE rn = 1
+                   )""",
+                (game_date,),
+            )
+
+        return repaired
 
 
 def get_alt_props(

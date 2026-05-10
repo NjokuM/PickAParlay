@@ -366,6 +366,7 @@ def _run_refresh_background(season: str) -> None:
         #     write. This keeps peak RAM proportional to one batch rather than
         #     the entire grading run.
         all_prop_dicts: list[dict] = []   # serialised dicts only — much lighter
+        all_upserted_ids: list[int] = []  # accumulated across ALL batches for finalize
         above_threshold = 0
         graded_count = 0
         _current_player = ""
@@ -392,10 +393,15 @@ def _run_refresh_background(season: str) -> None:
             with _refresh_lock:
                 _refresh_state["props_graded"] = i + 1
 
-            # Flush batch: serialise → DB → cache checkpoint → free objects
+            # Flush batch: serialise → DB (no stale-mark yet) → cache checkpoint → free
+            # mark_stale=False is critical: stale-marking happens ONCE at the end
+            # via finalize_graded_props(), using ALL IDs from the full refresh.
+            # Without this, each intermediate batch would deactivate the previous
+            # batches, leaving only the last ~N props marked is_active=1.
             if len(_unsaved_batch) >= BATCH_SIZE and game_date:
                 batch_dicts = [dataclasses.asdict(vp) for vp in _unsaved_batch]
-                database.upsert_graded_props(_unsaved_batch, game_date)
+                ids = database.upsert_graded_props(_unsaved_batch, game_date, mark_stale=False)
+                all_upserted_ids.extend(ids)
                 above_threshold += sum(
                     1 for vp in _unsaved_batch if vp.value_score >= config.MIN_VALUE_SCORE
                 )
@@ -410,10 +416,11 @@ def _run_refresh_background(season: str) -> None:
                 if len(all_prop_dicts) % 200 < BATCH_SIZE:
                     cache.save_scored_props(all_prop_dicts)
 
-        # Flush the final partial batch
+        # Flush the final partial batch (also no stale-mark yet)
         if _unsaved_batch and game_date:
             batch_dicts = [dataclasses.asdict(vp) for vp in _unsaved_batch]
-            database.upsert_graded_props(_unsaved_batch, game_date)
+            ids = database.upsert_graded_props(_unsaved_batch, game_date, mark_stale=False)
+            all_upserted_ids.extend(ids)
             above_threshold += sum(
                 1 for vp in _unsaved_batch if vp.value_score >= config.MIN_VALUE_SCORE
             )
@@ -421,6 +428,12 @@ def _run_refresh_background(season: str) -> None:
             all_prop_dicts.extend(batch_dicts)
             del _unsaved_batch, batch_dicts
             gc.collect()
+
+        # Single stale-mark + best_side pass across ALL upserted IDs.
+        # This correctly marks only props from a previous refresh as inactive,
+        # and every prop from THIS refresh stays is_active = 1.
+        if game_date and all_upserted_ids:
+            database.finalize_graded_props(game_date, all_upserted_ids)
 
         # 5. Final cache save + invalidate in-memory cache
         cache.save_scored_props(all_prop_dicts)
