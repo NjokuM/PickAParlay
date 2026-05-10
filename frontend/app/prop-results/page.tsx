@@ -7,6 +7,7 @@ import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { bookmakerLabel } from "@/lib/bookmakers";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { isAdmin } from "@/lib/auth";
+import { useOddsFormat, formatOdds } from "@/lib/odds";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -94,6 +95,7 @@ const MARKETS = [
 
 export default function PropResultsPage() {
   const isMobile = useIsMobile();
+  const { format } = useOddsFormat();
   const yesterday = nDaysAgo(1);
 
   // Filters — default to yesterday only
@@ -454,7 +456,7 @@ export default function PropResultsPage() {
                     {(r.side ?? "over").toUpperCase()}
                   </span>
                   <span>{r.line} {r.market_label}</span>
-                  <span style={{ color: "var(--accent)" }}>{r.decimal_odds?.toFixed(2) ?? "—"}</span>
+                  <span style={{ color: "var(--accent)" }}>{formatOdds(r.decimal_odds, format)}</span>
                   <span style={{ marginLeft: "auto" }}>
                     {r.leg_result ? <LegResultBadge result={r.leg_result} /> : <span style={{ color: "var(--muted)" }}>—</span>}
                   </span>
@@ -501,7 +503,7 @@ export default function PropResultsPage() {
                 ) : (
                   <span style={{ fontSize: 11, color: "var(--muted)" }}>—</span>
                 )}
-                <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.decimal_odds?.toFixed(2) ?? "—"}</span>
+                <span style={{ color: "var(--muted)", fontSize: 12 }}>{formatOdds(r.decimal_odds, format)}</span>
                 <span style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {r.matchup ?? bookmakerLabel(r.bookmaker)}
                 </span>

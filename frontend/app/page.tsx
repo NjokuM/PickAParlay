@@ -9,6 +9,7 @@ import { useSlipBuilder } from "@/lib/slip-builder-context";
 import { bookmakerLabel } from "@/lib/bookmakers";
 import { isAdmin } from "@/lib/auth";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useOddsFormat, formatOdds } from "@/lib/odds";
 
 const MARKETS = [
   "All Markets", "Points", "Assists", "Rebounds", "Pts+Reb+Ast",
@@ -22,6 +23,7 @@ interface Filters {
 export default function DashboardPage() {
   const { addLeg, isInSlip } = useSlipBuilder();
   const isMobile = useIsMobile();
+  const { format } = useOddsFormat();
   const [props, setProps]           = useState<Prop[]>([]);
   const [games, setGames]           = useState<Game[]>([]);
   const [bookmakers, setBookmakers] = useState<string[]>([]);
@@ -250,7 +252,7 @@ export default function DashboardPage() {
                         {p.line} {p.market_label}
                       </span>
                       <span style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>
-                        {p.over_odds.toFixed(2)}
+                        {formatOdds(p.over_odds, format)}
                       </span>
                       <span style={{ fontSize: 11, color: "var(--muted)" }}>
                         {bookmakerLabel(p.bookmaker)}
@@ -331,7 +333,7 @@ export default function DashboardPage() {
                     </span>
                     {p.line}
                   </div>
-                  <div style={{ fontSize: 13, color: "var(--accent)" }}>{p.over_odds.toFixed(2)}</div>
+                  <div style={{ fontSize: 13, color: "var(--accent)" }}>{formatOdds(p.over_odds, format)}</div>
                   <div style={{ fontSize: 12, color: "var(--muted)" }}>{bookmakerLabel(p.bookmaker)}</div>
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>{p.game}</div>
                   {p.prop_id ? (

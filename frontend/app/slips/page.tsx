@@ -7,9 +7,11 @@ import { ScoreBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { bookmakerLabel } from "@/lib/bookmakers";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useOddsFormat, formatOdds } from "@/lib/odds";
 
 export default function SlipsPage() {
   const isMobile = useIsMobile();
+  const { format } = useOddsFormat();
   const [odds, setOdds]         = useState("");            // empty = best-value mode
   const [legs, setLegs]         = useState("");
   const [minScore, setMinScore] = useState(50);
@@ -141,7 +143,7 @@ export default function SlipsPage() {
               <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
                 <div>
                   <span style={{ fontSize: 11, color: "var(--muted)" }}>Combined Odds</span>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: "var(--accent)" }}>{slip.combined_odds.toFixed(2)}</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "var(--accent)" }}>{formatOdds(slip.combined_odds, format)}</div>
                 </div>
                 <div>
                   <span style={{ fontSize: 11, color: "var(--muted)" }}>Avg Score</span>
@@ -179,7 +181,7 @@ export default function SlipsPage() {
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
                     <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 12 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
                   </div>
-                  <div style={{ color: "var(--accent)", fontSize: 13 }}>{leg.over_odds.toFixed(2)}</div>
+                  <div style={{ color: "var(--accent)", fontSize: 13 }}>{formatOdds(leg.over_odds, format)}</div>
                   {!isMobile && <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>{bookmakerLabel(leg.bookmaker)}</div>}
                   {!isMobile && <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>}
                 </div>

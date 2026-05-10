@@ -6,6 +6,7 @@ import { OutcomeBadge, LegResultBadge, ScoreBadge } from "@/components/Badge";
 import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { bookmakerLabel } from "@/lib/bookmakers";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useOddsFormat, formatOdds } from "@/lib/odds";
 
 /** Return yesterday's date as "YYYY-MM-DD" in local time. */
 function yesterday(): string {
@@ -20,6 +21,7 @@ function formatDate(s: string) {
 
 export default function HistoryPage() {
   const isMobile = useIsMobile();
+  const { format } = useOddsFormat();
   const [slips, setSlips]       = useState<SavedSlip[]>([]);
   const [loading, setLoading]   = useState(true);
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -165,7 +167,7 @@ export default function HistoryPage() {
                 <div style={{ display: "flex", gap: isMobile ? 8 : 16, alignItems: "center", flexWrap: "wrap" }}>
                   <span style={{ fontSize: 12, color: "var(--muted)" }}>#{slip.id}</span>
                   {!isMobile && <span style={{ fontSize: 12, color: "var(--muted)" }}>{formatDate(slip.saved_at)}</span>}
-                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>{slip.combined_odds?.toFixed(2) ?? "—"}</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>{formatOdds(slip.combined_odds, format)}</span>
                   <span style={{ fontSize: 12, color: "var(--muted)" }}>Score: {slip.avg_value_score?.toFixed(1) ?? "—"}</span>
                 </div>
 
@@ -188,7 +190,7 @@ export default function HistoryPage() {
                       <span style={{ fontWeight: 600, fontSize: 13 }}>{leg.player_name}</span>
                       <span style={{ color: "var(--muted)", fontSize: 12, marginLeft: 6 }}>{(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}</span>
                     </div>
-                    <span style={{ color: "var(--accent)", fontSize: 12 }}>{leg.over_odds?.toFixed(2) ?? "—"}</span>
+                    <span style={{ color: "var(--accent)", fontSize: 12 }}>{formatOdds(leg.over_odds, format)}</span>
                   </div>
                 ))}
               </div>

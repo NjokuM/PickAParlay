@@ -8,6 +8,7 @@ import { PlayerHeadshot } from "@/components/PlayerHeadshot";
 import { useSlipBuilder } from "@/lib/slip-builder-context";
 import { bookmakerLabel } from "@/lib/bookmakers";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useOddsFormat, formatOdds } from "@/lib/odds";
 
 const btn = (active?: boolean): React.CSSProperties => ({
   padding: "6px 14px", borderRadius: 6, border: "1px solid var(--border)",
@@ -39,6 +40,7 @@ function scoreColor(s: number): string {
 
 export default function LadderPage() {
   const isMobile = useIsMobile();
+  const { format } = useOddsFormat();
   // Slip builder
   const { addLeg, isInSlip } = useSlipBuilder();
 
@@ -367,7 +369,7 @@ export default function LadderPage() {
                       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
                         <span style={{ color: p.side === "over" ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{(p.side ?? "over").toUpperCase()}</span>
                         <span>{p.line} {p.market_label}</span>
-                        <span style={{ color: "var(--accent)", fontWeight: 600 }}>{(p.decimal_odds ?? 0).toFixed(2)}</span>
+                        <span style={{ color: "var(--accent)", fontWeight: 600 }}>{formatOdds(p.decimal_odds, format)}</span>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -392,7 +394,7 @@ export default function LadderPage() {
                       <span style={{ fontSize: 12, color: "var(--muted)" }}>{p.market_label}</span>
                       <span style={{ fontSize: 13, fontWeight: 600 }}>{p.line}</span>
                       <span style={{ fontSize: 12, color: p.side === "over" ? "var(--green)" : "var(--red)" }}>{(p.side ?? "over").toUpperCase()}</span>
-                      <span style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>{(p.decimal_odds ?? 0).toFixed(2)}</span>
+                      <span style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>{formatOdds(p.decimal_odds, format)}</span>
                       <span style={{ fontSize: 11, color: scoreColor(p.value_score) }}>{p.recommendation?.replace(" Value", "")}</span>
                       <span style={{ fontSize: 11, color: "var(--muted)" }}>{bookmakerLabel(p.bookmaker)}</span>
                       <button
@@ -450,6 +452,7 @@ function SlipCard({
   prefix: string;
 }) {
   const isMobile = useIsMobile();
+  const { format } = useOddsFormat();
   const cardKey = prefix === "s" ? -(idx + 1) : idx;   // unique key for expand state
   const isExpanded = expanded === cardKey;
 
@@ -460,7 +463,7 @@ function SlipCard({
         <div style={{ display: "flex", gap: isMobile ? 12 : 16, alignItems: "center" }}>
           <div>
             <span style={{ fontSize: 11, color: "var(--muted)" }}>Odds</span>
-            <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, color: "var(--accent)" }}>{slip.combined_odds.toFixed(2)}</div>
+            <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, color: "var(--accent)" }}>{formatOdds(slip.combined_odds, format)}</div>
           </div>
           <div>
             <span style={{ fontSize: 11, color: "var(--muted)" }}>Score</span>
@@ -491,7 +494,7 @@ function SlipCard({
                 {(leg.side ?? "over").toUpperCase()} {leg.line} {leg.market_label}
               </span>
             </div>
-            <div style={{ color: "var(--accent)", fontSize: 13 }}>{leg.over_odds.toFixed(2)}</div>
+            <div style={{ color: "var(--accent)", fontSize: 13 }}>{formatOdds(leg.over_odds, format)}</div>
             {!isMobile && <div style={{ fontSize: 12, color: "var(--muted)", minWidth: 90, textAlign: "right" }}>{bookmakerLabel(leg.bookmaker)}</div>}
             {!isMobile && <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, textAlign: "right" }}>{leg.game}</div>}
           </div>

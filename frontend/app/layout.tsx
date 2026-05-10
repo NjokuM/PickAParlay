@@ -8,6 +8,7 @@ import { api, Credits, ScheduleInfo } from "@/lib/api";
 import { SlipBuilderProvider } from "@/lib/slip-builder-context";
 import SlipBuilderPanel from "@/components/SlipBuilderPanel";
 import { getUser, isLoggedIn, clearAuth, isAdmin, AuthUser } from "@/lib/auth";
+import { OddsFormatProvider, OddsFormatSelector } from "@/lib/odds";
 import { useIsMobile } from "@/hooks/useIsMobile";
 
 function timeAgo(isoStr: string): string {
@@ -91,6 +92,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   // ── Mobile Layout ──
   if (isMobile) {
     return (
+      <OddsFormatProvider>
       <html lang="en">
         <head>
           <title>PickAParlay</title>
@@ -148,6 +150,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                       {nextRunLabel(schedule) && <>Next: {nextRunLabel(schedule)}</>}
                     </div>
                   )}
+                  <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)" }}>
+                    <OddsFormatSelector compact />
+                  </div>
                   <button onClick={handleLogout} style={{
                     display: "block", width: "100%", textAlign: "left",
                     padding: "12px 16px", background: "none", border: "none",
@@ -193,11 +198,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </SlipBuilderProvider>
         </body>
       </html>
+      </OddsFormatProvider>
     );
   }
 
   // ── Desktop Layout ──
   return (
+    <OddsFormatProvider>
     <html lang="en">
       <head>
         <title>PickAParlay</title>
@@ -269,6 +276,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </div>
             )}
 
+            {/* Odds format selector */}
+            <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
+              <OddsFormatSelector />
+            </div>
+
             {user && (
               <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", fontSize: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -300,5 +312,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </div>
       </body>
     </html>
+    </OddsFormatProvider>
   );
 }
