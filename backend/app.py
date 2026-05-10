@@ -1165,6 +1165,17 @@ def grade_custom_prop(req: GradeCustomRequest, _user: dict = Depends(require_use
             detail=f"{req.player_name}'s team ({team}) is not playing tonight.",
         )
 
+    # Populate odds_event_id so blowout risk can fetch the live spread.
+    # get_todays_games() always returns odds_event_id="" — we need to match
+    # the game to the Odds API event here, exactly as the refresh pipeline does.
+    try:
+        events = odds_api.get_events()
+        event_id = odds_api.match_game_to_event(game, events)
+        if event_id:
+            game.odds_event_id = event_id
+    except Exception:
+        pass  # Non-fatal — blowout risk falls back to H2H + team style
+
     # Build a PlayerProp with placeholder odds
     prop = PlayerProp(
         player_name=req.player_name,
