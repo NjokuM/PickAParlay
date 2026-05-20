@@ -37,13 +37,9 @@ def compute(
             confidence=0.0,
         )
 
-    # Drop zero-weight rows, take last 10 non-OT games where possible
+    # Drop zero-weight rows, take last 10 games (OT games included — they are
+    # high-stakes, full-minutes games, especially relevant in the playoffs)
     valid = df[df.get("CTX_WEIGHT", pd.Series([1.0] * len(df))) > 0].copy()
-    if "IS_OT" in valid.columns:
-        non_ot = valid[~valid["IS_OT"]]
-        if len(non_ot) >= 5:
-            valid = non_ot
-
     valid = valid.head(10)
     values = valid[stat_col].tolist()
 
@@ -112,7 +108,6 @@ def compute(
     vals_str = ", ".join(str(round(v, 1)) for v in values)
     hit_count = sum(hits)
     total = len(values)
-    ot_flag = " (OT games excluded)" if "IS_OT" in df.columns else ""
     po_games = int(valid.get("IS_PLAYOFF_GAME", pd.Series([False] * len(valid))).sum())
     po_flag = f", {po_games} playoff" if po_games > 0 else ""
     if side == "under":
@@ -124,7 +119,7 @@ def compute(
         direction_label = f"{hit_count}/{total} exceeded {line} (line)"
     mean_vs_line = "above" if weighted_mean >= line else "below"
     evidence = [
-        f"Last {total} games{ot_flag}{po_flag}: {vals_str}",
+        f"Last {total} games{po_flag}: {vals_str}",
         direction_label,
         f"Mean={round(weighted_mean, 1)} ({mean_vs_line} {line}), {bound_label}",
         f"Weighted hit rate: {weighted_hit_rate:.0%}",

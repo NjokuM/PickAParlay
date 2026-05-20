@@ -708,6 +708,12 @@ def invalidate_props_cache() -> None:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/health")
+def health() -> dict:
+    """Lightweight health check — probed by Fly.io every 15s to detect backend crashes."""
+    return {"status": "ok"}
+
+
 @app.get("/api/tonight")
 def get_tonight() -> list[dict]:
     """Tonight's NBA games (ET date), deduplicated by game_id."""
