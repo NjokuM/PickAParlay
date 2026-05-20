@@ -2,7 +2,11 @@
 # Caddy listens on :8080, routes to backend (uvicorn) and frontend (next start)
 
 :8080 {
-    # API requests → FastAPI backend
+    # Health check + API requests → FastAPI backend
+    handle /health {
+        reverse_proxy localhost:8000
+    }
+
     handle /api/* {
         reverse_proxy localhost:8000
     }
