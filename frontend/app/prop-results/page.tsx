@@ -106,8 +106,7 @@ export default function PropResultsPage() {
   const [minScore,   setMinScore]   = useState(0);
   const [side,       setSide]       = useState<"" | "over" | "under">("");
   const [result,     setResult]     = useState<"" | "HIT" | "MISS">("");
-  const [picksOnly,  setPicksOnly]  = useState(true);
-  const [activeOnly, setActiveOnly] = useState(true);
+  const [activeOnly, setActiveOnly] = useState(false);
   const [gradedOnly, setGradedOnly] = useState(true);
   const [altFilter,  setAltFilter]  = useState<"regular" | "alt" | "all">("regular");
   const [view,       setView]       = useState<"table" | "players">("table");
@@ -129,7 +128,7 @@ export default function PropResultsPage() {
   async function load(overrides?: {
     dateFrom?: string; dateTo?: string; player?: string; market?: string;
     minScore?: number; side?: "" | "over" | "under"; result?: "" | "HIT" | "MISS";
-    picksOnly?: boolean; activeOnly?: boolean; gradedOnly?: boolean;
+    activeOnly?: boolean; gradedOnly?: boolean;
     altFilter?: "regular" | "alt" | "all";
   }) {
     setLoading(true);
@@ -141,7 +140,6 @@ export default function PropResultsPage() {
       const ms   = overrides?.minScore   ?? minScore;
       const sd   = overrides?.side       ?? side;
       const rs   = overrides?.result     ?? result;
-      const po   = overrides?.picksOnly  ?? picksOnly;
       const ao   = overrides?.activeOnly ?? activeOnly;
       const go   = overrides?.gradedOnly ?? gradedOnly;
       const af   = overrides?.altFilter  ?? altFilter;
@@ -154,7 +152,6 @@ export default function PropResultsPage() {
         min_score:   ms > 0 ? ms : undefined,
         side:        sd || undefined,
         result:      rs || undefined,
-        picks_only:  po  || undefined,
         active_only: ao  || undefined,
         graded_only: go,
         alt_filter:  af,
@@ -308,9 +305,6 @@ export default function PropResultsPage() {
         <div>
           <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>Filters</div>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            <button style={pill(picksOnly)} onClick={() => setPicksOnly(!picksOnly)}>
-              Picks Only
-            </button>
             <button style={pill(activeOnly)} onClick={() => setActiveOnly(!activeOnly)}>
               Active Only
             </button>

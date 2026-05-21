@@ -70,38 +70,25 @@ _scheduler = BackgroundScheduler(timezone=_LONDON)
 
 
 def _scheduled_grade_results() -> None:
-    """Grade last night's results. NBA dates are Eastern Time, so 6 AM London
-    on March 22 should grade March 21 ET games."""
-    yesterday_et = (datetime.now(_ET) - timedelta(days=1)).strftime("%Y-%m-%d")
-    print(f"[cron] Grading results for {yesterday_et} (yesterday ET)")
+    """
+    Grade results for the last 2 ET dates. Runs at 06:30 London/Irish time
+    (01:30 EDT) — all games are finished and box scores are available.
+    Grading 2 days back ensures any game the NBA API was slow to process
+    yesterday gets picked up today rather than staying unresolved forever.
+    """
+    et_now = datetime.now(_ET)
+    dates = [
+        (et_now - timedelta(days=1)).strftime("%Y-%m-%d"),  # yesterday ET (primary)
+        (et_now - timedelta(days=2)).strftime("%Y-%m-%d"),  # two days ago (catch-up)
+    ]
 
     with _results_lock:
         if _results_state["status"] == "running":
             print("[cron] Results check already running — skipping")
             return
 
-    t = threading.Thread(
-        target=_run_results_background, args=(yesterday_et,), daemon=True
-    )
-    t.start()
-
-
-def _scheduled_grade_results_tonight() -> None:
-    """
-    Late-night results check: grade any same-day games that have just finished.
-    Runs at 00:30 London (23:30 ET) — by then even late West Coast games are done.
-    Also re-grades yesterday in case the 6 AM run had any failures.
-    """
-    today_et = datetime.now(_ET).strftime("%Y-%m-%d")
-    yesterday_et = (datetime.now(_ET) - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    with _results_lock:
-        if _results_state["status"] == "running":
-            print("[cron-night] Results check already running — skipping")
-            return
-
-    for game_date in [today_et, yesterday_et]:
-        print(f"[cron-night] Grading results for {game_date}")
+    for game_date in dates:
+        print(f"[cron] Grading results for {game_date}")
         t = threading.Thread(
             target=_run_results_background, args=(game_date,), daemon=True
         )
@@ -142,12 +129,7 @@ def startup() -> None:
     # Start cron scheduler
     _scheduler.add_job(
         _scheduled_grade_results,
-        "cron", hour=6, minute=0, id="grade_results",
-        replace_existing=True,
-    )
-    _scheduler.add_job(
-        _scheduled_grade_results_tonight,
-        "cron", hour=0, minute=30, id="grade_results_tonight",
+        "cron", hour=6, minute=30, id="grade_results",
         replace_existing=True,
     )
     _scheduler.add_job(
