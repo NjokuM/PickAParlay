@@ -19,6 +19,7 @@ from src.api.nba_stats import (
     get_player_current_team,
 )
 from src.api.odds_api import get_game_spread
+from src.analysis import priors
 from src.analysis.context_filter import apply_context_weights
 from src.analysis.factors import (
     consistency,
@@ -60,8 +61,15 @@ def grade_prop(
 
     # --- Fetch blended game log (RS + playoff if active) so we can exit early ---
     df_raw = get_player_game_log_blended(prop.nba_player_id, season=season)
-    if df_raw.empty or len(df_raw) < config.MIN_GAMES_PLAYED:
+
+    # Early-season prior from last season's per-minute rates (fades out by 40 GP).
+    # With a prior, 3 games are enough to grade; without one (rookies) we need 5.
+    prior = priors.get_player_prior(prop.nba_player_id, season=season)
+    min_games = config.MIN_GAMES_WITH_PRIOR if prior else config.MIN_GAMES_PLAYED
+    if df_raw.empty or len(df_raw) < min_games:
         return None
+    prior_k = priors.prior_weight(len(df_raw), prior)
+    prior_mu = priors.prior_mean(prior, stat_col, df_raw) if prior_k > 0 else None
 
     # --- Detect returning-from-injury (gap ≥ 7 days in recent game log) ---
     return_info = detect_return_from_injury(df_raw)
@@ -87,7 +95,9 @@ def grade_prop(
     )
 
     # --- Factor 1: Consistency ---
-    f_consistency = consistency.compute(df_ctx, stat_col, prop.line, side=side)
+    f_consistency = consistency.compute(
+        df_ctx, stat_col, prop.line, side=side, prior_mu=prior_mu, prior_k=prior_k,
+    )
 
     # Apply return-from-injury penalty to consistency confidence
     if return_info["is_returning"]:
@@ -147,7 +157,9 @@ def grade_prop(
     )
 
     # --- Factor 6: Season Average ---
-    f_season = season_avg.compute(df_raw, stat_col, prop.line, side=side)
+    f_season = season_avg.compute(
+        df_raw, stat_col, prop.line, side=side, prior_mu=prior_mu, prior_k=prior_k,
+    )
 
     # --- Factor 7: Blowout Risk ---
     spread = None

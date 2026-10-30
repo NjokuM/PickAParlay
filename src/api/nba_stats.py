@@ -391,6 +391,34 @@ def get_player_season_averages(player_id: int, season: str | None = None) -> dic
     return avgs
 
 
+def get_league_player_totals(season: str | None = None) -> pd.DataFrame:
+    """
+    Season totals (GP, MIN, PTS, REB, AST, FG3M) for every player in one call.
+    Used for last-season per-minute priors (src/analysis/priors.py).
+    """
+    if season is None:
+        season = config.PREV_SEASON
+    cache_key = f"league_player_totals_{season}"
+    ttl = config.CACHE_TTL["game_log"] if season == config.DEFAULT_SEASON else config.CACHE_TTL["prev_season"]
+    cached = cache_get(cache_key, ttl)
+    if cached:
+        return pd.DataFrame(cached)
+
+    _sleep()
+    try:
+        df = LeagueDashPlayerStats(
+            season=season,
+            per_mode_detailed="Totals",
+        ).get_data_frames()[0]
+    except Exception as exc:
+        print(f"[nba_stats] LeagueDashPlayerStats {season} failed: {exc}")
+        return pd.DataFrame()
+
+    df = df[["PLAYER_ID", "GP", "MIN", "PTS", "REB", "AST", "FG3M"]]
+    cache_set(cache_key, df.to_dict(orient="records"))
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Team stats / pace
 # ---------------------------------------------------------------------------
@@ -493,47 +521,93 @@ def get_team_advanced_stats(season: str | None = None) -> pd.DataFrame:
     return df
 
 
+_DEF_STAT_KEYS = ["OPP_PTS", "OPP_AST", "OPP_REB", "OPP_FG3M"]
+
+
+def team_prior_weight(games_played: float) -> float:
+    """How many games last season's team profile is worth (fades to 0 — see config)."""
+    fade = max(0.0, 1.0 - games_played / config.TEAM_PRIOR_FADE_GAMES)
+    return config.TEAM_PRIOR_GAMES * fade
+
+
+def _per_game_team_table(season: str) -> pd.DataFrame:
+    """Per-game opponent stats + PACE/DEF_RATING/GP for all teams, indexed by TEAM_ID."""
+    df_def = get_team_defensive_stats(season)
+    df_adv = get_team_advanced_stats(season)
+    if df_def.empty or df_adv.empty:
+        return pd.DataFrame()
+
+    d = df_def.set_index("TEAM_ID")
+    a = df_adv.set_index("TEAM_ID")
+    gp = d["GP"].astype(float)
+    out = pd.DataFrame({key: d[key].astype(float) / gp.clip(lower=1) for key in _DEF_STAT_KEYS})
+    out["PACE"] = a["PACE"].astype(float)
+    out["DEF_RATING"] = a["DEF_RATING"].astype(float)
+    out["GP"] = gp
+    out["TEAM_NAME"] = d["TEAM_NAME"]
+    return out
+
+
 def get_opponent_defensive_profile(opponent_team_id: int, season: str | None = None) -> dict | None:
     """
     Return {OPP_PTS, OPP_AST, OPP_REB, OPP_FG3M, PACE, DEF_RATING}
     plus percentile ranks for the given opponent team.
+
+    Early in a season every team's numbers are blended with last season's
+    (worth team_prior_weight(GP) games) before ranking — a 5-game sample alone
+    barely predicts the rest of the season. Also returns GP and PRIOR_GAMES so
+    the factor can scale its confidence.
     """
     if season is None:
         season = config.DEFAULT_SEASON
 
-    df_def = get_team_defensive_stats(season)
-    df_adv = get_team_advanced_stats(season)
+    cols = _DEF_STAT_KEYS + ["PACE", "DEF_RATING"]
+    cur = _per_game_team_table(season)
+    prev = _per_game_team_table(config.prev_season_of(season))
 
-    if df_def.empty or df_adv.empty:
+    if cur.empty and prev.empty:
         return None
+    if cur.empty:
+        # Season hasn't started (or current stats unavailable) — last season only
+        table, gp, names = prev[cols].copy(), pd.Series(0.0, index=prev.index), prev["TEAM_NAME"]
+        prior_k = pd.Series(team_prior_weight(0), index=prev.index)
+    else:
+        table, gp, names = cur[cols].copy(), cur["GP"], cur["TEAM_NAME"]
+        prior_k = gp.apply(team_prior_weight)
+        if not prev.empty:
+            p = prev[cols].reindex(table.index)
+            use = p.notna().all(axis=1) & (prior_k > 0)
+            w_cur = gp / (gp + prior_k)
+            blended = table.mul(w_cur, axis=0) + p.mul(1 - w_cur, axis=0)
+            table.loc[use] = blended.loc[use]
+            prior_k = prior_k.where(use, 0.0)
+        else:
+            prior_k = pd.Series(0.0, index=table.index)
 
-    def_row = df_def[df_def["TEAM_ID"] == opponent_team_id]
-    adv_row = df_adv[df_adv["TEAM_ID"] == opponent_team_id]
-    if def_row.empty or adv_row.empty:
+    if opponent_team_id not in table.index:
         return None
+    row = table.loc[opponent_team_id]
 
-    row_d = def_row.iloc[0]
-    row_a = adv_row.iloc[0]
-    gp = float(row_d.get("GP", 1)) or 1.0
+    result: dict = {
+        "TEAM_NAME": names.get(opponent_team_id, ""),
+        "GP": int(gp.get(opponent_team_id, 0)),
+        "PRIOR_GAMES": round(float(prior_k.get(opponent_team_id, 0.0)), 1),
+    }
 
-    # Convert totals to per-game for ranking
-    stat_keys = ["OPP_PTS", "OPP_AST", "OPP_REB", "OPP_FG3M"]
-    result: dict = {"TEAM_NAME": row_d.get("TEAM_NAME", "")}
-
-    for key in stat_keys:
-        val = float(row_d.get(key, 0)) / gp
+    for key in _DEF_STAT_KEYS:
+        val = float(row[key])
         result[key] = round(val, 1)
         # Compute percentile (0 = best defense, 1 = worst defense)
-        all_vals = (df_def[key].astype(float) / df_def["GP"].astype(float)).values
+        all_vals = table[key].dropna().values
         pct = float((all_vals < val).sum()) / len(all_vals)
         result[f"{key}_pct"] = round(pct, 3)
 
     # Pace from advanced stats
-    result["PACE"] = float(row_a.get("PACE", 100.0))
-    all_pace = df_adv["PACE"].astype(float).values
+    result["PACE"] = float(row["PACE"]) if pd.notna(row["PACE"]) else 100.0
+    all_pace = table["PACE"].dropna().values
     result["PACE_pct"] = round(float((all_pace < result["PACE"]).sum()) / len(all_pace), 3)
 
-    result["DEF_RATING"] = float(row_a.get("DEF_RATING", 110.0))
+    result["DEF_RATING"] = float(row["DEF_RATING"]) if pd.notna(row["DEF_RATING"]) else 110.0
 
     return result
 

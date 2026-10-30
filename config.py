@@ -30,6 +30,12 @@ def _nba_season(year_offset: int = 0) -> str:
 DEFAULT_SEASON: str = _nba_season(0)    # e.g. "2025-26"
 PREV_SEASON:    str = _nba_season(-1)   # e.g. "2024-25"
 
+
+def prev_season_of(season: str) -> str:
+    """"2026-27" → "2025-26"."""
+    start = int(season[:4]) - 1
+    return f"{start}-{str(start + 1)[2:]}"
+
 # ---------------------------------------------------------------------------
 # Playoff detection & blending
 # ---------------------------------------------------------------------------
@@ -91,6 +97,43 @@ MIN_SAMPLE: dict[str, int] = {
 }
 
 # ---------------------------------------------------------------------------
+# Early-season priors (src/analysis/priors.py)
+# A handful of games is mostly noise. Backtested on 2025-26 (predict each
+# player's next 15 games from their first N): blending current-season games
+# with LAST season's per-minute rates × THIS season's minutes cut error from
+# 34% to 29% at 5 games (39% → 31% at 3), and helped every subgroup incl.
+# players who changed team — per-minute production carries over, minutes
+# (role/team) are what change and they come from this season. Even when early
+# games sharply contradict the prior, trusting the prior was far better (the
+# early games are usually the fluke). Team "allowed" ranks after 5 games
+# barely predict the rest of the season (AST 0.20, 3PM 0.15 rank correlation)
+# — last season's ranks do better until ~15 games in.
+# Both priors fade to zero, so mid/late-season scoring is unchanged.
+# ---------------------------------------------------------------------------
+PLAYER_PRIOR_GAMES: float = 10.0      # prior counts as this many games at season start…
+PLAYER_PRIOR_FADE_GAMES: int = 40     # …shrinking linearly to 0 by this many games played
+PLAYER_PRIOR_FULL_GP: int = 20        # last-season GP needed for a full-strength prior
+PLAYER_PRIOR_MIN_GP: int = 10         # below this (rookies, barely played) → no prior
+
+TEAM_PRIOR_GAMES: float = 25.0        # last season's team profile counts as this many games…
+TEAM_PRIOR_FADE_GAMES: int = 45       # …shrinking linearly to 0 by this many games played
+TEAM_FULL_CONFIDENCE_GAMES: int = 30  # team-stat factors reach full confidence here
+
+# Game-to-game spread per stat: SD = a × mean^b — turns a projected mean into
+# P(over/under line) via a negative binomial. Fitted on 2024-25 player game
+# logs; spread grows slower than the mean (a 28-ppg star varies ±8, not ±10).
+STAT_SD_POWER: dict[str, tuple[float, float]] = {
+    "PTS":  (2.708, 0.338),
+    "REB":  (1.274, 0.466),
+    "AST":  (1.140, 0.493),
+    "FG3M": (1.104, 0.466),
+    "PRA":  (4.058, 0.234),
+    "PR":   (3.597, 0.260),
+    "PA":   (3.079, 0.300),
+    "RA":   (1.734, 0.356),
+}
+
+# ---------------------------------------------------------------------------
 # Context similarity weights
 # Used by context_filter to down-weight non-current-team games
 # ---------------------------------------------------------------------------
@@ -105,6 +148,10 @@ CONTEXT_WEIGHTS = {
     "b2b_tonight_b2b":       1.00,
     "normal_rest_b2b":       0.30,
 }
+
+# Consistency also needs this many games of evidence (games played + prior
+# games) for full confidence — a 4/5 streak alone isn't, unless a prior backs it.
+CONSISTENCY_FULL_CONFIDENCE_GAMES: int = 10
 
 # Minimum current-team games before we stop using previous-team data at all
 MIN_CURRENT_TEAM_GAMES: int = 15
@@ -240,6 +287,7 @@ CACHE_TTL: dict[str, int] = {
     "team_stats":   86400,    # 24 hours
     "h2h":          86400,    # 24 hours
     "player_team":  43200,    # 12 hours — shorter than game_log so trades are caught same-day
+    "prev_season":  604800,   # 7 days — a finished season's data doesn't change
 }
 
 CACHE_DIR: str = os.getenv("CACHE_DIR", os.path.join(os.path.dirname(__file__), ".cache"))
@@ -253,6 +301,8 @@ TIP_OFF_BUFFER_MINUTES: int = 30
 
 # Minimum games played to include a player in analysis
 MIN_GAMES_PLAYED: int = 5
+# …relaxed when a last-season prior exists (3 games + prior beat 5 games alone in backtest)
+MIN_GAMES_WITH_PRIOR: int = 3
 
 # Season rolling window for role-change detection
 ROLE_CHANGE_WINDOW: int = 20        # games

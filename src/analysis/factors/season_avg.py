@@ -21,10 +21,14 @@ def compute(
     stat_col: str,
     line: float,
     side: str = "over",
+    prior_mu: float | None = None,
+    prior_k: float = 0.0,
 ) -> FactorResult:
     """
     df: full current-season game log (all teams, no context filter needed here —
         we want the full season picture, but still weight current team higher).
+    prior_mu / prior_k: early-season prior (src/analysis/priors.py) — the
+        average is blended with it, worth prior_k games.
     """
     weight = config.FACTOR_WEIGHTS["season_avg"]
 
@@ -71,6 +75,12 @@ def compute(
     else:
         primary_avg = full_avg
 
+    # Early-season prior: blend with last season's per-minute rate × current minutes
+    prior_share = 0.0
+    if prior_mu is not None and prior_k > 0:
+        prior_share = prior_k / (games_played + prior_k)
+        primary_avg = (1 - prior_share) * primary_avg + prior_share * prior_mu
+
     # Score: direction-aware — OVER wants avg above line, UNDER wants avg below line
     if line <= 0:
         score = 50.0
@@ -92,7 +102,9 @@ def compute(
             score = max(0.0, 50.0 - deficit_pct * 100)
 
     score = round(score, 1)
-    confidence = compute_confidence(games_played, config.MIN_SAMPLE["season_avg"])
+    confidence = compute_confidence(
+        games_played + (prior_k if prior_share > 0 else 0.0), config.MIN_SAMPLE["season_avg"]
+    )
 
     # Direction-aware verdict string
     if side == "under":
@@ -120,6 +132,11 @@ def compute(
         f"Season avg: {full_avg:.1f}{blend_note} ({games_played} games) | "
         f"Using: {primary_avg:.1f} | Line: {line}"
     )
+    if prior_share > 0:
+        evidence.append(
+            f"Blended {prior_share:.0%} with last-season prior "
+            f"(projects {prior_mu:.1f}, worth {prior_k:.1f} games)"
+        )
     evidence.append(verdict)
     if confidence < 1.0:
         evidence.append(f"Low confidence — {games_played} games played (need {config.MIN_SAMPLE['season_avg']})")

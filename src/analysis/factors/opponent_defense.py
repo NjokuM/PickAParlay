@@ -111,6 +111,17 @@ def compute(
 
     evidence.append(f"DEF Rating: {profile.get('DEF_RATING', 0):.1f}")
 
+    # Early season: stats are blended with last season (see
+    # get_opponent_defensive_profile) and still noisier than a full sample —
+    # confidence ramps up with games played.
+    gp = profile.get("GP", 0)
+    prior_games = profile.get("PRIOR_GAMES", 0.0)
+    confidence = team_stat_confidence(gp, prior_games)
+    if prior_games > 0:
+        evidence.append(
+            f"Early season: {gp} games blended with last season (worth {prior_games:.0f} games)"
+        )
+
     return FactorResult(
         name="Opponent Defense",
         score=score,
@@ -125,6 +136,23 @@ def compute(
             "pace_pct": pace_pct,
             "pace_adj": pace_adj,
             "def_rating": profile.get("DEF_RATING", 0),
+            "games_played": gp,
+            "prior_games": prior_games,
         },
-        confidence=1.0,
+        confidence=confidence,
     )
+
+
+def team_stat_confidence(games_played: int, prior_games: float) -> float:
+    """
+    Confidence for a factor built on team-level season stats, reaching 1.0 at
+    config.TEAM_FULL_CONFIDENCE_GAMES. Backtest (2025-26): early-season ranks
+    blended with last season are ~75-90% as predictive as a 40-game sample, so
+    with a prior we start at 0.7; current-season data alone starts near 0.
+    """
+    full = config.TEAM_FULL_CONFIDENCE_GAMES
+    if games_played >= full:
+        return 1.0
+    if prior_games > 0:
+        return 0.7 + 0.3 * games_played / full
+    return games_played / full
