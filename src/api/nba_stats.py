@@ -530,11 +530,24 @@ def team_prior_weight(games_played: float) -> float:
     return config.TEAM_PRIOR_GAMES * fade
 
 
+_team_table_memo: dict[str, tuple[float, pd.DataFrame]] = {}
+
+
 def _per_game_team_table(season: str) -> pd.DataFrame:
-    """Per-game opponent stats + PACE/DEF_RATING/GP for all teams, indexed by TEAM_ID."""
+    """
+    Per-game opponent stats + PACE/DEF_RATING/GP for all teams, indexed by TEAM_ID.
+    Memoised in-process (it's needed for every graded prop); after a failed
+    fetch we don't retry for 10 minutes, so a throttled stats.nba.com can't
+    add a timeout to every prop in a refresh.
+    """
+    hit = _team_table_memo.get(season)
+    if hit and time.time() - hit[0] < (600 if hit[1].empty else 3600):
+        return hit[1]
+
     df_def = get_team_defensive_stats(season)
     df_adv = get_team_advanced_stats(season)
     if df_def.empty or df_adv.empty:
+        _team_table_memo[season] = (time.time(), pd.DataFrame())
         return pd.DataFrame()
 
     d = df_def.set_index("TEAM_ID")
@@ -545,6 +558,7 @@ def _per_game_team_table(season: str) -> pd.DataFrame:
     out["DEF_RATING"] = a["DEF_RATING"].astype(float)
     out["GP"] = gp
     out["TEAM_NAME"] = d["TEAM_NAME"]
+    _team_table_memo[season] = (time.time(), out)
     return out
 
 
