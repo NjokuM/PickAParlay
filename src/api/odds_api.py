@@ -15,7 +15,9 @@ import json
 import os
 import threading
 import requests
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import config
 import sys
@@ -28,6 +30,9 @@ from src.cache import (
     get_credits_remaining,
 )
 from src.models import NBAGame, PlayerProp
+from src.database import save_odds_snapshot
+
+_ET = ZoneInfo("America/New_York")
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +514,7 @@ def get_player_props_for_event(
             },
         )
         if data:
+            _snapshot_odds(event_id, data, eu_markets)
             results.extend(_extract_props(data.get("bookmakers", []), eu_markets))
 
     # Call 2: US region — combo markets (PR, PA, RA) not offered by EU books
@@ -523,10 +529,50 @@ def get_player_props_for_event(
             },
         )
         if data:
+            _snapshot_odds(event_id, data, us_markets)
             results.extend(_extract_props(data.get("bookmakers", []), us_markets))
 
     cache_set(cache_key, results)
     return results
+
+
+def _snapshot_odds(event_id: str, data: dict, markets: list[str]) -> None:
+    """
+    Persist EVERY bookmaker's line/odds from a props response — not just the
+    one _extract_props keeps. Free: billing is per market × region, not per
+    bookmaker. Builds the line-movement / market-consensus / closing-line
+    history that can't be fetched again later (except via paid historical calls).
+    """
+    try:
+        captured_at = datetime.utcnow().isoformat()
+        game_date = None
+        commence = data.get("commence_time")
+        if commence:
+            game_date = (
+                datetime.fromisoformat(commence.replace("Z", "+00:00"))
+                .astimezone(_ET).strftime("%Y-%m-%d")
+            )
+        rows: list[tuple] = []
+        for bm in data.get("bookmakers", []):
+            for market in bm.get("markets", []):
+                if market.get("key") not in markets:
+                    continue
+                lines: dict[tuple[str, float], list] = {}
+                for o in market.get("outcomes", []):
+                    player, point = o.get("description"), o.get("point")
+                    if not player or point is None:
+                        continue
+                    entry = lines.setdefault((player, float(point)), [None, None])
+                    if o.get("name") == "Over":
+                        entry[0] = _decimal_odds(o.get("price"))
+                    elif o.get("name") == "Under":
+                        entry[1] = _decimal_odds(o.get("price"))
+                for (player, point), (over, under) in lines.items():
+                    rows.append((captured_at, game_date, event_id, player, market["key"],
+                                 bm["key"], point, over, under))
+        save_odds_snapshot(rows)
+    except Exception as exc:
+        print(f"[odds-api] ⚠️ Odds snapshot failed for {event_id}: {exc}")
 
 
 def _extract_props(bookmakers: list[dict], markets: list[str]) -> list[dict]:

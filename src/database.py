@@ -6,12 +6,19 @@ tracking and model calibration over time.
 
 Tables
 ------
-grading_runs  — one record per `refresh` execution
-saved_slips   — bet slips explicitly saved by the user
-slip_legs     — individual legs of each saved slip, with factor scores
+grading_runs      — one record per `refresh` execution
+saved_slips       — bet slips explicitly saved by the user
+slip_legs         — individual legs of each saved slip, with factor scores
+graded_props      — every graded prop: model version, factor details, result, actual stat
+model_versions    — each model version seen, with its tunables
+odds_snapshots    — every bookmaker's line/odds per refresh (movement, consensus, CLV)
+refresh_snapshots — per-refresh spreads + injury report
 """
 from __future__ import annotations
 
+import dataclasses
+import json
+import math
 import sqlite3
 from datetime import datetime
 from typing import Any
@@ -50,6 +57,44 @@ def _normalise_factor_scores(factors: list) -> dict[str, float | None]:
         elif "volume" in low or "usage" in low:
             mapping["Volume & Usage"] = f.score
     return mapping
+
+
+def _compact(obj: Any) -> Any:
+    """JSON-safe copy: floats rounded to 4 dp, NaN/inf → None, numpy/dataclasses unwrapped."""
+    if type(obj).__module__ == "numpy":
+        obj = obj.tolist()   # numpy scalar → Python scalar, array → list
+    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        obj = dataclasses.asdict(obj)
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else round(obj, 4)
+    if isinstance(obj, dict):
+        return {str(k): _compact(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_compact(v) for v in obj]
+    if obj is None or isinstance(obj, (str, int, bool)):
+        return obj
+    return str(obj)
+
+
+def _factors_json(factors: list) -> str:
+    """Every factor's score, confidence, weight and raw inputs (evidence text excluded)."""
+    def slim(data: dict) -> dict:
+        # Injury lists repeat the full report (stored once per refresh in
+        # refresh_snapshots) — keep just "name:status" per player here.
+        return {
+            k: [f"{i.get('player_name')}:{i.get('status')}" for i in v]
+               if isinstance(v, list) and v and isinstance(v[0], dict) and "player_name" in v[0]
+               else v
+            for k, v in (data or {}).items()
+        }
+    return json.dumps(
+        _compact([
+            {"name": f.name, "score": f.score, "confidence": f.confidence,
+             "weight": f.weight, "data": slim(f.data)}
+            for f in factors
+        ]),
+        separators=(",", ":"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +268,82 @@ def init_db() -> None:
         except Exception:
             pass
 
+        # ── Model versioning + richer capture (Oct 2026) ─────────────────
+        # Store at grading time what can't be re-fetched later: which model
+        # scored the prop and how (factor scores, confidences, inputs), every
+        # bookmaker's line per refresh, spreads and the injury report. Actual
+        # stat values are filled in by the results checker.
+        for ddl in (
+            "ALTER TABLE graded_props ADD COLUMN model_version TEXT",
+            "ALTER TABLE graded_props ADD COLUMN factors_json TEXT",
+            "ALTER TABLE graded_props ADD COLUMN actual_value REAL",
+            "ALTER TABLE graded_props ADD COLUMN actual_minutes REAL",
+            "ALTER TABLE grading_runs ADD COLUMN model_version TEXT",
+        ):
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass  # Column already exists
+        # Everything graded before versioning existed is the legacy model
+        conn.execute(
+            "UPDATE graded_props SET model_version = ? WHERE model_version IS NULL",
+            (config.LEGACY_MODEL_VERSION,),
+        )
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_graded_props_version
+                ON graded_props(model_version);
+
+            CREATE TABLE IF NOT EXISTS model_versions (
+                version        TEXT PRIMARY KEY,
+                base_version   TEXT NOT NULL,
+                config_json    TEXT,
+                first_seen_at  TEXT NOT NULL,
+                last_seen_at   TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS odds_snapshots (
+                id           INTEGER PRIMARY KEY,
+                captured_at  TEXT NOT NULL,
+                game_date    TEXT,
+                event_id     TEXT NOT NULL,
+                player_name  TEXT NOT NULL,
+                market       TEXT NOT NULL,
+                bookmaker    TEXT NOT NULL,
+                line         REAL,
+                over_odds    REAL,
+                under_odds   REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_odds_snapshots_lookup
+                ON odds_snapshots(game_date, player_name, market);
+
+            CREATE TABLE IF NOT EXISTS refresh_snapshots (
+                id             INTEGER PRIMARY KEY,
+                captured_at    TEXT NOT NULL,
+                game_date      TEXT,
+                model_version  TEXT,
+                games_json     TEXT,
+                injuries_json  TEXT
+            );
+        """)
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            """INSERT OR IGNORE INTO model_versions
+               (version, base_version, config_json, first_seen_at, last_seen_at)
+               VALUES (?, ?, NULL, ?, ?)""",
+            (config.LEGACY_MODEL_VERSION, config.LEGACY_MODEL_VERSION, now, now),
+        )
+        conn.execute(
+            """INSERT INTO model_versions
+               (version, base_version, config_json, first_seen_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(version) DO UPDATE SET last_seen_at = excluded.last_seen_at""",
+            (
+                config.model_version_id(), config.MODEL_VERSION,
+                json.dumps(config.model_config_snapshot(), sort_keys=True, default=str),
+                now, now,
+            ),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Grading runs
@@ -239,8 +360,9 @@ def save_grading_run(
     with _connect() as conn:
         cur = conn.execute(
             """INSERT INTO grading_runs
-               (run_at, season, games_count, props_total, props_graded, props_eligible)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (run_at, season, games_count, props_total, props_graded, props_eligible,
+                model_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.utcnow().isoformat(),
                 season,
@@ -248,6 +370,7 @@ def save_grading_run(
                 props_total,
                 props_graded,
                 props_eligible,
+                config.model_version_id(),
             ),
         )
         return cur.lastrowid
@@ -684,6 +807,57 @@ def _compute_pick_analytics(conn, is_alternate: int, min_score: int = 65) -> dic
     }
 
 
+def _model_version_table(conn, min_score: int) -> list[dict]:
+    """
+    Per model version (regular props, best side only): every graded pick, and
+    the picks at/above min_score with hit rate, implied probability, edge, ROI.
+    Versions cover different dates, so slate/season effects are mixed in —
+    compare like-for-like periods where possible.
+    """
+    ROI_EXPR = "CASE WHEN leg_result = 'HIT' THEN decimal_odds - 1 ELSE -1.0 END"
+    HAS_ODDS = "decimal_odds IS NOT NULL AND decimal_odds > 0"
+    PICK = f"value_score >= {int(min_score)}"
+    rows = conn.execute(
+        f"""SELECT COALESCE(model_version, ?) AS version,
+                   MIN(game_date) AS first_date,
+                   MAX(game_date) AS last_date,
+                   COUNT(*) AS graded,
+                   SUM(CASE WHEN leg_result = 'HIT' THEN 1 ELSE 0 END) AS graded_hits,
+                   AVG(value_score) AS avg_score,
+                   SUM(CASE WHEN {PICK} THEN 1 ELSE 0 END) AS picks,
+                   SUM(CASE WHEN {PICK} AND leg_result = 'HIT' THEN 1 ELSE 0 END) AS hits,
+                   SUM(CASE WHEN {PICK} AND {HAS_ODDS} THEN {ROI_EXPR} END) AS roi_units,
+                   SUM(CASE WHEN {PICK} AND {HAS_ODDS} THEN 1 ELSE 0 END) AS n_odds,
+                   AVG(CASE WHEN {PICK} AND {HAS_ODDS} THEN 1.0 / decimal_odds END) AS avg_impl
+            FROM graded_props
+            WHERE leg_result IS NOT NULL AND is_best_side = 1 AND is_alternate = 0
+            GROUP BY version
+            ORDER BY first_date""",
+        (config.LEGACY_MODEL_VERSION,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        picks, hits = r["picks"] or 0, r["hits"] or 0
+        hit_rate = hits / picks if picks else None
+        out.append({
+            "version":          r["version"],
+            "first_date":       r["first_date"],
+            "last_date":        r["last_date"],
+            "graded":           r["graded"],
+            "graded_hit_rate_pct": round(r["graded_hits"] / r["graded"] * 100, 1) if r["graded"] else None,
+            "avg_score":        round(r["avg_score"], 1) if r["avg_score"] is not None else None,
+            "picks":            picks,
+            "hits":             hits,
+            "hit_rate_pct":     round(hit_rate * 100, 1) if hit_rate is not None else None,
+            "implied_prob_pct": round(r["avg_impl"] * 100, 1) if r["avg_impl"] else None,
+            "edge_pct":         round((hit_rate - r["avg_impl"]) * 100, 1)
+                                if (hit_rate is not None and r["avg_impl"]) else None,
+            "roi_pct":          round(r["roi_units"] / r["n_odds"] * 100, 1)
+                                if (r["n_odds"] and r["roi_units"] is not None) else None,
+        })
+    return out
+
+
 def get_analytics(min_score: int = 65) -> dict:
     """
     Return accuracy analytics split by regular vs alt props.
@@ -702,6 +876,7 @@ def get_analytics(min_score: int = 65) -> dict:
 
         # ── Threshold comparison table (always at all 5 levels) ───────
         threshold_regular = _threshold_table(conn, is_alternate=0)
+        by_model_version  = _model_version_table(conn, min_score)
         threshold_alt     = _threshold_table(conn, is_alternate=1)
 
         # ── Slip-level stats (not split — slips can mix types) ────────
@@ -728,6 +903,9 @@ def get_analytics(min_score: int = 65) -> dict:
             "by_side":            regular["by_side"],
             "daily_trend":        regular["daily_trend"],
             "daily_pnl":          regular["daily_pnl"],
+            # ── Model versions (regular props) ────────────────────────
+            "by_model_version": by_model_version,
+            "model_version":    config.model_version_id(),
             # ── Slip stats (unchanged) ────────────────────────────────
             "slips": {
                 "total_slips": total_slips,
@@ -764,6 +942,7 @@ def upsert_graded_props(
     if not valued_props:
         return []
 
+    model_version = config.model_version_id()
     with _connect() as conn:
         upserted_ids: list[int] = []
 
@@ -788,8 +967,8 @@ def upsert_graded_props(
                     score_injury, score_team_context, score_season_avg,
                     score_blowout_risk, score_volume_context,
                     score_opponent_defense,
-                    is_active, graded_at, matchup)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)
+                    is_active, graded_at, matchup, model_version, factors_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)
                    ON CONFLICT(player_name, market, line, side, game_date)
                    DO UPDATE SET
                      nba_player_id  = excluded.nba_player_id,
@@ -813,7 +992,10 @@ def upsert_graded_props(
                      score_opponent_defense   = excluded.score_opponent_defense,
                      is_active    = 1,
                      graded_at    = excluded.graded_at,
-                     matchup      = excluded.matchup""",
+                     matchup      = excluded.matchup,
+                     model_version = excluded.model_version,
+                     factors_json  = excluded.factors_json
+                   RETURNING id""",
                 (
                     vp.prop.player_name, vp.prop.nba_player_id,
                     vp.prop.market, market_label, vp.prop.line, side,
@@ -833,10 +1015,14 @@ def upsert_graded_props(
                     factor_scores.get("Opponent Defense"),
                     datetime.utcnow().isoformat(),
                     matchup,
+                    model_version,
+                    _factors_json(vp.factors),
                 ),
             )
-            # lastrowid returns the inserted id, or the existing id on conflict
-            upserted_ids.append(cur.lastrowid)
+            # RETURNING gives the row id on both paths — cursor.lastrowid is
+            # stale when the upsert takes the UPDATE path (an existing prop
+            # re-graded), which handed finalize the wrong IDs to stale-mark.
+            upserted_ids.append(cur.fetchone()[0])
 
         if mark_stale:
             # Determine whether this batch is alt or regular so we only
@@ -1022,13 +1208,93 @@ def get_unresolved_graded_props(game_date: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def record_graded_prop_result(prop_id: int, result: str) -> None:
-    """Record HIT / MISS for a graded prop."""
+def record_graded_prop_result(
+    prop_id: int,
+    result: str,
+    actual_value: float | None = None,
+    actual_minutes: float | None = None,
+) -> None:
+    """Record HIT / MISS for a graded prop, plus the actual stat and minutes played."""
     with _connect() as conn:
         conn.execute(
-            "UPDATE graded_props SET leg_result = ?, result_at = ? WHERE id = ?",
-            (result, datetime.utcnow().isoformat(), prop_id),
+            """UPDATE graded_props
+               SET leg_result = ?, result_at = ?, actual_value = ?, actual_minutes = ?
+               WHERE id = ?""",
+            (result, datetime.utcnow().isoformat(), actual_value, actual_minutes, prop_id),
         )
+
+
+def get_graded_props_missing_actuals(game_date: str) -> list[dict]:
+    """Result-checked props for game_date with no actual stat stored (pre-Oct 2026 rows)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT id, player_name, market FROM graded_props
+               WHERE game_date = ? AND leg_result IS NOT NULL AND actual_value IS NULL""",
+            (game_date,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_dates_missing_actuals() -> list[str]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT game_date FROM graded_props
+               WHERE leg_result IS NOT NULL AND actual_value IS NULL
+               ORDER BY game_date"""
+        ).fetchall()
+        return [r[0] for r in rows]
+
+
+def set_graded_prop_actual(prop_id: int, actual_value: float, actual_minutes: float | None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE graded_props SET actual_value = ?, actual_minutes = ? WHERE id = ?",
+            (actual_value, actual_minutes, prop_id),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Snapshots — market + context data that can't be re-fetched later
+# ---------------------------------------------------------------------------
+
+def save_odds_snapshot(rows: list[tuple]) -> None:
+    """
+    rows: (captured_at, game_date, event_id, player_name, market, bookmaker,
+           line, over_odds, under_odds)
+    """
+    if not rows:
+        return
+    with _connect() as conn:
+        conn.executemany(
+            """INSERT INTO odds_snapshots
+               (captured_at, game_date, event_id, player_name, market, bookmaker,
+                line, over_odds, under_odds)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+
+
+def save_refresh_snapshot(game_date: str | None, games: list[dict], injuries: Any) -> None:
+    """Spreads and the injury report as they were when this refresh graded props."""
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO refresh_snapshots
+               (captured_at, game_date, model_version, games_json, injuries_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                datetime.utcnow().isoformat(), game_date, config.model_version_id(),
+                json.dumps(_compact(games), separators=(",", ":")),
+                json.dumps(_compact(injuries), separators=(",", ":")),
+            ),
+        )
+
+
+def get_model_versions() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM model_versions ORDER BY first_seen_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def propagate_results_to_slip_legs(game_date: str) -> int:
@@ -1134,7 +1400,8 @@ def get_prop_results(
                        matchup, graded_at, result_at,
                        score_consistency, score_opponent_defense, score_vs_opponent, score_home_away,
                        score_injury, score_team_context, score_season_avg,
-                       score_blowout_risk, score_volume_context
+                       score_blowout_risk, score_volume_context,
+                       model_version, actual_value, actual_minutes
                 FROM graded_props
                 WHERE {where}
                 ORDER BY game_date DESC, value_score DESC

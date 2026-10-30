@@ -354,3 +354,51 @@ def get_market_label(market: str) -> str:
     base = get_base_market(market)
     cfg = MARKET_MAP.get(base)
     return cfg["label"] if cfg else market
+
+
+# ---------------------------------------------------------------------------
+# Model versioning
+# Every graded prop is stamped with model_version_id() so performance can be
+# compared across model versions (see /api/analytics → by_model_version).
+#
+# Bump MODEL_VERSION by hand whenever factor LOGIC changes (code in
+# src/analysis/). Changes to the tunables below (weights, thresholds,
+# priors…) are picked up automatically via the config hash suffix.
+#   1.x — everything graded before versioning existed (Feb–Oct 2026)
+#   2.0 — early-season priors: last-season per-minute player prior,
+#         blended team defence, honest confidence (Oct 2026)
+# ---------------------------------------------------------------------------
+MODEL_VERSION: str = "2.0"
+LEGACY_MODEL_VERSION: str = "1.x"
+
+
+def model_config_snapshot() -> dict:
+    """Every tunable that changes how props are scored."""
+    return {
+        "FACTOR_WEIGHTS": FACTOR_WEIGHTS,
+        "RECENCY_WEIGHTS_10": RECENCY_WEIGHTS_10,
+        "MIN_SAMPLE": MIN_SAMPLE,
+        "CONTEXT_WEIGHTS": CONTEXT_WEIGHTS,
+        "MIN_CURRENT_TEAM_GAMES": MIN_CURRENT_TEAM_GAMES,
+        "CONSISTENCY_FULL_CONFIDENCE_GAMES": CONSISTENCY_FULL_CONFIDENCE_GAMES,
+        "PLAYER_PRIOR": [PLAYER_PRIOR_GAMES, PLAYER_PRIOR_FADE_GAMES,
+                         PLAYER_PRIOR_FULL_GP, PLAYER_PRIOR_MIN_GP],
+        "TEAM_PRIOR": [TEAM_PRIOR_GAMES, TEAM_PRIOR_FADE_GAMES, TEAM_FULL_CONFIDENCE_GAMES],
+        "STAT_SD_POWER": STAT_SD_POWER,
+        "MIN_GAMES": [MIN_GAMES_PLAYED, MIN_GAMES_WITH_PRIOR],
+        "PLAYOFF_GAME_WEIGHT": PLAYOFF_GAME_WEIGHT,
+        "ROLE_CHANGE": [ROLE_CHANGE_WINDOW, ROLE_CHANGE_THRESHOLD],
+        "BLOWOUT": [BLOWOUT_SPREAD_NORMALISER, BLOWOUT_RISK_CUTOFF,
+                    BLOWOUT_PENALTY_UNDERDOG_STAR, BLOWOUT_PENALTY_FAVORITE_STAR,
+                    BLOWOUT_PENALTY_BENCH, BLOWOUT_PENALTY_NON_COUNTING],
+        "SCORE_LABELS": SCORE_LABELS,
+        "MIN_VALUE_SCORE": MIN_VALUE_SCORE,
+    }
+
+
+def model_version_id() -> str:
+    """MODEL_VERSION plus a short hash of the tunables, e.g. "2.0+3fa2c1"."""
+    import hashlib
+    import json
+    blob = json.dumps(model_config_snapshot(), sort_keys=True, default=str)
+    return f"{MODEL_VERSION}+{hashlib.sha1(blob.encode()).hexdigest()[:6]}"

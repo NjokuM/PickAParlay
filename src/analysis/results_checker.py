@@ -34,6 +34,9 @@ from src.database import (
     record_leg_result,
     propagate_results_to_slip_legs,
     auto_resolve_slip_outcome,
+    get_dates_missing_actuals,
+    get_graded_props_missing_actuals,
+    set_graded_prop_actual,
 )
 
 
@@ -71,6 +74,21 @@ _COMBO_COMPONENTS: dict[str, list[str]] = {
     "player_points_assists":          ["points", "assists"],
     "player_rebounds_assists":        ["reboundsTotal", "assists"],
 }
+
+
+def _parse_minutes(raw) -> float | None:
+    """V3 minutes "31:07" (or "PT31M07.00S") → 31.12."""
+    if raw in (None, ""):
+        return None
+    text = str(raw)
+    try:
+        if text.startswith("PT"):
+            mins, _, rest = text[2:].partition("M")
+            return round(float(mins or 0) + float(rest.rstrip("S") or 0) / 60, 2)
+        mins, _, secs = text.partition(":")
+        return round(float(mins) + float(secs or 0) / 60, 2)
+    except ValueError:
+        return None
 
 
 def _norm_name(name: str) -> str:
@@ -182,6 +200,7 @@ def fetch_box_scores(
                     for k, v in stats.items()
                     if k in _ALL_TRACKED_STATS
                 }
+                player_stats[name]["_minutes"] = _parse_minutes(stats.get("minutes"))
 
     return player_stats
 
@@ -189,6 +208,32 @@ def fetch_box_scores(
 # ---------------------------------------------------------------------------
 # Per-leg grading
 # ---------------------------------------------------------------------------
+
+def actual_stat(
+    player_name: str,
+    market: str,
+    player_stats: dict[str, dict[str, float]],
+) -> tuple[float, float | None] | None:
+    """
+    (actual stat value, minutes played) for a player/market from box scores,
+    or None if the player isn't in the box scores (DNP / name mismatch) or the
+    market is unknown.
+    """
+    # Normalise _alternate suffix so alt-line legs resolve correctly
+    market = config.get_base_market(market)
+
+    pstats = player_stats.get(_norm_name(player_name))
+    if pstats is None:
+        return None  # No data — player didn't play or name mismatch
+
+    if market in _MARKET_TO_V3:
+        actual = pstats.get(_MARKET_TO_V3[market], 0.0)
+    elif market in _COMBO_COMPONENTS:
+        actual = sum(pstats.get(k, 0.0) for k in _COMBO_COMPONENTS[market])
+    else:
+        return None  # Unknown market — can't grade
+    return actual, pstats.get("_minutes")
+
 
 def check_leg(
     player_name: str,
@@ -201,23 +246,10 @@ def check_leg(
     Grade a single prop leg.
     Returns "HIT", "MISS", or None (player not in box scores — DNP / not found).
     """
-    # Normalise _alternate suffix so alt-line legs resolve correctly
-    market = config.get_base_market(market)
-
-    pstats = player_stats.get(_norm_name(player_name))
-    if pstats is None:
-        return None  # No data — player didn't play or name mismatch
-
-    # Compute the relevant stat value
-    if market in _MARKET_TO_V3:
-        v3_key = _MARKET_TO_V3[market]
-        actual = pstats.get(v3_key, 0.0)
-    elif market in _COMBO_COMPONENTS:
-        keys   = _COMBO_COMPONENTS[market]
-        actual = sum(pstats.get(k, 0.0) for k in keys)
-    else:
-        # Unknown market — can't grade
+    found = actual_stat(player_name, market, player_stats)
+    if found is None:
         return None
+    actual = found[0]
 
     if side == "over":
         return "HIT" if actual > line else "MISS"
@@ -294,7 +326,8 @@ def check_results_for_date(game_date: str) -> dict:
             props_no_data += 1
             continue
 
-        record_graded_prop_result(gp["id"], result)
+        actual, minutes = actual_stat(gp["player_name"], gp["market"], player_stats)
+        record_graded_prop_result(gp["id"], result, actual_value=actual, actual_minutes=minutes)
         props_checked += 1
         if result == "HIT":
             props_hit += 1
@@ -358,3 +391,28 @@ def check_results_for_date(game_date: str) -> dict:
         "games_in_progress": len(in_progress),
         "games_not_started": len(not_started),
     }
+
+
+def backfill_actuals(date_from: str | None = None, date_to: str | None = None) -> dict:
+    """
+    Fill actual_value / actual_minutes for already-graded props that predate
+    actuals being stored (box scores can always be re-fetched). Leaves
+    leg_result untouched. Dates are YYYY-MM-DD, inclusive.
+    """
+    dates = [d for d in get_dates_missing_actuals()
+             if (date_from is None or d >= date_from) and (date_to is None or d <= date_to)]
+    filled = missing = 0
+    for d in dates:
+        props = get_graded_props_missing_actuals(d)
+        if not props:
+            continue
+        player_stats = fetch_box_scores(d)
+        for gp in props:
+            found = actual_stat(gp["player_name"], gp["market"], player_stats)
+            if found is None:
+                missing += 1
+                continue
+            set_graded_prop_actual(gp["id"], found[0], found[1])
+            filled += 1
+        print(f"[backfill] {d}: {len(props)} props, {filled} filled so far")
+    return {"dates": len(dates), "filled": filled, "not_found": missing}

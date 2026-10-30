@@ -427,6 +427,27 @@ def _run_refresh_background(season: str) -> None:
         if game_date and all_upserted_ids:
             database.finalize_graded_props(game_date, all_upserted_ids)
 
+        # Context that can't be re-fetched later: spreads (read from cache —
+        # no extra credits) and the injury report used for this grading
+        try:
+            database.save_refresh_snapshot(
+                game_date,
+                [
+                    {
+                        "game_id": g.game_id,
+                        "matchup": f"{g.away_team} @ {g.home_team}",
+                        "event_id": g.odds_event_id,
+                        "tip_utc": g.game_time_utc,
+                        "spread": cache.get(f"spread_{g.odds_event_id}", config.CACHE_TTL["spreads"])
+                                  if g.odds_event_id else None,
+                    }
+                    for g in games
+                ],
+                injuries,
+            )
+        except Exception as exc:
+            _log(f"⚠️ Refresh snapshot failed: {exc}")
+
         # 5. Final cache save + invalidate in-memory cache
         cache.save_scored_props(all_prop_dicts)
         invalidate_props_cache()
@@ -1064,6 +1085,41 @@ def get_analytics(min_score: int = Query(default=65)) -> dict:
     The threshold_table in the response always spans 60–80 for comparison.
     """
     return database.get_analytics(min_score=min_score)
+
+
+@app.get("/api/model-versions")
+def get_model_versions() -> dict:
+    """Every model version that has graded props, with its tunables."""
+    return {"current": config.model_version_id(), "versions": database.get_model_versions()}
+
+
+_backfill_state: dict = {"status": "idle", "result": None, "error": None}
+
+
+@app.post("/api/admin/backfill-actuals")
+def trigger_backfill_actuals(
+    date_from: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    date_to:   Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    _admin: dict = Depends(require_admin),
+) -> dict:
+    """Fill actual stat values for props graded before actuals were stored."""
+    if _backfill_state["status"] == "running":
+        return {"status": "already_running"}
+
+    def _run() -> None:
+        _backfill_state.update(status="running", result=None, error=None)
+        try:
+            _backfill_state.update(status="done", result=results_checker.backfill_actuals(date_from, date_to))
+        except Exception as exc:
+            _backfill_state.update(status="error", error=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started"}
+
+
+@app.get("/api/admin/backfill-actuals")
+def backfill_actuals_status(_admin: dict = Depends(require_admin)) -> dict:
+    return _backfill_state
 
 
 @app.get("/api/credits")

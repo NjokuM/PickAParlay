@@ -162,6 +162,21 @@ export interface ThresholdRow {
   edge_pct: number | null;
 }
 
+export interface ModelVersionRow {
+  version: string;
+  first_date: string;
+  last_date: string;
+  graded: number;                     // every graded best-side pick
+  graded_hit_rate_pct: number | null;
+  avg_score: number | null;
+  picks: number;                      // picks at/above the active min score
+  hits: number;
+  hit_rate_pct: number | null;
+  implied_prob_pct: number | null;
+  edge_pct: number | null;
+  roi_pct: number | null;
+}
+
 export interface PickAnalytics {
   picks: {
     total: number; hits: number; misses: number; hit_rate: number;
@@ -195,6 +210,9 @@ export interface Analytics extends PickAnalytics {
   // Separated sections
   regular: PickAnalytics;
   alt: PickAnalytics;
+  // Per model version (regular props) + the version currently grading
+  by_model_version?: ModelVersionRow[];
+  model_version?: string;
   // Slip stats (not split by type)
   slips: {
     total_slips: number;

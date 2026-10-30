@@ -388,6 +388,72 @@ export default function AnalyticsPage() {
         </div>
       )}
 
+      {/* ── Model Versions ── */}
+      {analyticsView === "regular" && data.by_model_version && data.by_model_version.length > 0 && (
+        <div style={{ ...CARD, marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Model Versions</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+            Performance of each model version on its best-side picks. Versions cover different dates,
+            so season timing is mixed in — compare like-for-like periods where possible.
+            {data.model_version && <> Currently grading: <b>{data.model_version}</b>.</>}
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--muted)", fontSize: 10, textTransform: "uppercase" }}>
+                  <th style={{ textAlign: "left", padding: "4px 8px", fontWeight: 600 }}>Version</th>
+                  <th style={{ textAlign: "left", padding: "4px 8px", fontWeight: 600 }}>Dates</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>All picks</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>{minScore}+ picks</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>Hit Rate</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>Implied</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>Edge</th>
+                  <th style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>ROI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...data.by_model_version].reverse().map(row => {
+                  const isCurrent = row.version === data.model_version;
+                  const signColor = (v: number | null) => v == null ? "var(--muted)" : v > 0 ? "var(--green)" : "var(--red)";
+                  return (
+                    <tr
+                      key={row.version}
+                      style={{
+                        borderBottom: "1px solid var(--border)",
+                        background: isCurrent ? "rgba(240,185,11,0.08)" : "transparent",
+                        fontWeight: isCurrent ? 700 : 400,
+                      }}
+                    >
+                      <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{row.version}</td>
+                      <td style={{ padding: "6px 8px", color: "var(--muted)", whiteSpace: "nowrap" }}>
+                        {row.first_date === row.last_date ? row.first_date : `${row.first_date} → ${row.last_date}`}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: "var(--muted)" }}>
+                        {row.graded}
+                        {row.graded_hit_rate_pct != null && ` · ${row.graded_hit_rate_pct.toFixed(1)}%`}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: "var(--muted)" }}>{row.picks}</td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: row.hit_rate_pct != null ? pctColor(row.hit_rate_pct) : "var(--muted)" }}>
+                        {row.hit_rate_pct != null ? `${row.hit_rate_pct.toFixed(1)}%` : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: "var(--muted)" }}>
+                        {row.implied_prob_pct != null ? `${row.implied_prob_pct.toFixed(1)}%` : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: signColor(row.edge_pct), fontWeight: 600 }}>
+                        {row.edge_pct != null ? `${row.edge_pct > 0 ? "+" : ""}${row.edge_pct.toFixed(1)}pp` : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "6px 8px", color: signColor(row.roi_pct) }}>
+                        {row.roi_pct != null ? `${row.roi_pct > 0 ? "+" : ""}${row.roi_pct.toFixed(1)}%` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {noData ? (
         <div style={{ ...CARD, padding: "60px 20px", textAlign: "center", color: "var(--muted)" }}>
           No graded picks yet. Refresh props → let games finish → check results.
