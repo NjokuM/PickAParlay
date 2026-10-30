@@ -87,6 +87,16 @@ def _scheduled_grade_results() -> None:
             print("[cron] Results check already running — skipping")
             return
 
+    # A refresh hammers stats.nba.com with hundreds of uncached calls (worst at
+    # the start of a season). Grading alongside it gets throttled and silently
+    # finds 0 games, so wait for any in-progress refresh to finish first.
+    waited = 0
+    while _refresh_state["running"] and waited < 45 * 60:
+        if waited == 0:
+            print("[cron] Refresh in progress — waiting for it to finish before grading")
+        time.sleep(30)
+        waited += 30
+
     for game_date in dates:
         print(f"[cron] Grading results for {game_date}")
         t = threading.Thread(

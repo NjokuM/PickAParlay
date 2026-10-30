@@ -17,9 +17,11 @@ Combo markets (PRA, PR, PA, RA) are computed by summing component stats.
 """
 from __future__ import annotations
 
+import re
 import time
 import sys
 import os
+import unicodedata
 
 # Ensure project root is on sys.path when this module is imported standalone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -71,6 +73,17 @@ _COMBO_COMPONENTS: dict[str, list[str]] = {
 }
 
 
+def _norm_name(name: str) -> str:
+    """
+    Normalise a player name for matching OddsAPI names to NBA box scores:
+    strip accents (Jokić → jokic) and punctuation (C.J. → cj, Jr. → jr).
+    """
+    name = unicodedata.normalize("NFKD", name)
+    name = "".join(c for c in name if not unicodedata.combining(c))
+    name = re.sub(r"[.'’]", "", name.lower())
+    return " ".join(name.replace("-", " ").split())
+
+
 # ---------------------------------------------------------------------------
 # Box score fetching
 # ---------------------------------------------------------------------------
@@ -92,11 +105,20 @@ def fetch_game_info_for_date(game_date: str) -> list[dict]:
         # Assume MM/DD/YYYY → YYYY-MM-DD
         game_date = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
 
-    time.sleep(config.NBA_API_SLEEP)
-    try:
-        board = ScoreboardV3(game_date=game_date, league_id="00")
-        games_df = board.data_sets[1].get_data_frame()   # game_header
-    except Exception:
+    # stats.nba.com intermittently throttles/times out (especially from cloud
+    # IPs) — retry with backoff rather than silently reporting "0 games".
+    games_df = None
+    for attempt in range(1, 4):
+        time.sleep(config.NBA_API_SLEEP)
+        try:
+            board = ScoreboardV3(game_date=game_date, league_id="00")
+            games_df = board.data_sets[1].get_data_frame()   # game_header
+            break
+        except Exception as exc:
+            print(f"[results] ScoreboardV3 failed for {game_date} (attempt {attempt}/3): {exc}")
+            if attempt < 3:
+                time.sleep(10 * attempt)
+    if games_df is None:
         return []
 
     games: list[dict] = []
@@ -129,10 +151,17 @@ def fetch_box_scores(
     player_stats: dict[str, dict[str, float]] = {}
 
     for gid in only_game_ids:
-        time.sleep(config.NBA_API_SLEEP)
-        try:
-            raw = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=gid).get_dict()
-        except Exception:
+        raw = None
+        for attempt in range(1, 3):
+            time.sleep(config.NBA_API_SLEEP)
+            try:
+                raw = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=gid).get_dict()
+                break
+            except Exception as exc:
+                print(f"[results] Box score {gid} failed (attempt {attempt}/2): {exc}")
+                if attempt < 2:
+                    time.sleep(5)
+        if raw is None:
             # Game may not have been played yet — skip and grade the rest
             continue
         box = raw.get("boxScoreTraditional", {})
@@ -141,7 +170,7 @@ def fetch_box_scores(
             for p in box.get(team_key, {}).get("players", []):
                 first = p.get("firstName", "")
                 last  = p.get("familyName", "")
-                name  = f"{first} {last}".strip().lower()
+                name  = _norm_name(f"{first} {last}")
                 if not name:
                     continue
                 stats = p.get("statistics", {})
@@ -175,7 +204,7 @@ def check_leg(
     # Normalise _alternate suffix so alt-line legs resolve correctly
     market = config.get_base_market(market)
 
-    pstats = player_stats.get(player_name.lower())
+    pstats = player_stats.get(_norm_name(player_name))
     if pstats is None:
         return None  # No data — player didn't play or name mismatch
 
