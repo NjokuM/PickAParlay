@@ -31,7 +31,7 @@ from pydantic import BaseModel
 import config
 import src.cache as cache
 import src.database as database
-from src.api import injury_api, nba_stats, odds_api
+from src.api import injury_api, league_tables, nba_stats, odds_api
 from src.api.odds_api import get_pool_credits
 from src.analysis import bet_builder, prop_grader, results_checker
 from src.models import BetLeg, BetSlip, FactorResult, NBAGame, PlayerProp, ValuedProp
@@ -176,6 +176,7 @@ _refresh_state: dict = {
     "run_id": None,
     "error": None,
     "detail": "",  # human-readable detail for terminal + frontend
+    "timings": {},  # seconds per refresh phase (games, odds, injuries, prefetch, grading, save)
 }
 _refresh_lock = threading.Lock()
 
@@ -193,7 +194,18 @@ def _run_refresh_background(season: str) -> None:
             props_total=0,
             run_id=None,
             error=None,
+            timings={},
         )
+
+    phase_start = [time.time()]
+
+    def _phase(name: str) -> None:
+        """Record how long the phase that just finished took."""
+        now = time.time()
+        with _refresh_lock:
+            _refresh_state["timings"][name] = round(now - phase_start[0], 1)
+        print(f"[refresh] ⏱ {name}: {now - phase_start[0]:.1f}s")
+        phase_start[0] = now
 
     try:
         # 1. Tonight's games (force_fresh=True to get live game statuses,
@@ -215,6 +227,7 @@ def _run_refresh_background(season: str) -> None:
                 _refresh_state["detail"] = detail or msg
 
         _log(f"🏀 Found {len(games)} games tonight")
+        _phase("games")
 
         # 2. Smart refresh — invalidate props cache so we fetch fresh odds
         cleared = odds_api.invalidate_props_cache()
@@ -226,6 +239,7 @@ def _run_refresh_background(season: str) -> None:
         injuries = injury_api.get_injury_report()
         injured_count = sum(len(v) for v in injuries.values()) if isinstance(injuries, dict) else 0
         _log(f"🏥 Injury report: {injured_count} players listed")
+        _phase("injuries")
 
         # 4. Events + props
         _log("📡 Fetching odds events…", "Fetching odds events")
@@ -262,6 +276,8 @@ def _run_refresh_background(season: str) -> None:
             unique_players = len({p.player_name for p in props})
             _log(f"  ✅ [{gi+1}/{len(games)}] {matchup} — {len(props)} props across {unique_players} players")
             all_raw_props.extend(props)
+
+        _phase("odds_and_props")
 
         # Deduplicate raw props (Odds API can return dupes across event IDs)
         seen_props: set[tuple] = set()
@@ -306,10 +322,14 @@ def _run_refresh_background(season: str) -> None:
             except Exception as e:
                 print(f"[refresh]   ⚠️ Game prefetch failed: {e}")
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             pool.map(_prefetch_game, games)
+        # League-wide tables for the hit model (one call each, memoised)
+        league_tables.get_snapshot(season)
+        league_tables.get_league_player_log(season)
 
         _log(f"✅ Game data prefetched for {len(games)} games")
+        _phase("prefetch_games")
 
         # --- Phase 2: Player-level data (game logs, current team) ---
         unique_pids = list({p.nba_player_id for p in all_raw_props if p.nba_player_id})
@@ -337,10 +357,11 @@ def _run_refresh_background(season: str) -> None:
                 _log(f"  👤 Prefetched {prefetched}/{total_players} players (latest: {name})",
                      f"Prefetching player data ({prefetched}/{total_players})")
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with ThreadPoolExecutor(max_workers=6) as pool:
             pool.map(_prefetch, unique_pids)
 
         _log(f"✅ Prefetched {total_players} players — grading {len(all_raw_props)} props")
+        _phase("prefetch_players")
 
         # Free prefetch references to reduce memory pressure during grading
         del unique_pids, _pid_to_name
@@ -421,6 +442,8 @@ def _run_refresh_background(season: str) -> None:
             del _unsaved_batch, batch_dicts
             gc.collect()
 
+        _phase("grading")
+
         # Single stale-mark + best_side pass across ALL upserted IDs.
         # This correctly marks only props from a previous refresh as inactive,
         # and every prop from THIS refresh stays is_active = 1.
@@ -459,6 +482,8 @@ def _run_refresh_background(season: str) -> None:
             props_graded=graded_count,
             props_eligible=above_threshold,
         )
+
+        _phase("save")
 
         # Free large objects now that everything is saved
         del all_prop_dicts, all_raw_props

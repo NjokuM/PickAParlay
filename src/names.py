@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 
+@lru_cache(maxsize=20000)
 def norm_name(name: str) -> str:
     """Lowercase, no accents/punctuation/generational suffix: "Derrick Jones Jr." → "derrick jones"."""
     name = unicodedata.normalize("NFKD", name or "")

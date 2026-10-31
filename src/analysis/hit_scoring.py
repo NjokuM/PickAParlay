@@ -46,12 +46,18 @@ def score_from_probability(p: float) -> float:
     return round(50.0 + 50.0 * math.tanh(config.HIT_SCORE_STEEPNESS * (p - 0.5)), 1)
 
 
+_absence_memo: dict[tuple, float] = {}
+
+
 def _absences(team: str, date: str, injured: set[str], league_log: pd.DataFrame | None) -> float:
-    """Extra regulars' minutes listed out/doubtful tonight vs the team's usual (hit_features.team_absences)."""
+    """Extra regulars' minutes listed out/doubtful tonight vs the team's usual (hit_features.team_absences), memoised."""
     if league_log is None:
         return 0.0
-    t = league_log[league_log.TEAM_ABBREVIATION == team]
-    return hit_features.team_absences(t, date, tonight_out=injured, norm=_norm_name) if not t.empty else 0.0
+    key = (team, date, hash(frozenset(injured)), len(league_log))
+    if key not in _absence_memo:
+        t = league_log[league_log.TEAM_ABBREVIATION == team]
+        _absence_memo[key] = hit_features.team_absences(t, date, tonight_out=injured, norm=_norm_name) if not t.empty else 0.0
+    return _absence_memo[key]
 
 
 _role_memo: dict[tuple, dict] = {}
@@ -61,7 +67,7 @@ def _role(team: str, date: str, injured: set[str], league_log: pd.DataFrame | No
     """Role-matched absorption of tonight's absences for one team (hit_features.role_absorption), memoised."""
     if league_log is None:
         return {}
-    key = (team, date, hash(frozenset(injured)))
+    key = (team, date, hash(frozenset(injured)), len(league_log))
     if key not in _role_memo:
         t = league_log[league_log.TEAM_ABBREVIATION == team]
         _role_memo[key] = hit_features.role_absorption(t, date, tonight_out=injured, norm=_norm_name) if not t.empty else {}

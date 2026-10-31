@@ -41,6 +41,26 @@ def _sleep() -> None:
     time.sleep(config.NBA_API_SLEEP)
 
 
+def game_data_ttl() -> int:
+    """
+    Seconds since this morning's 06:00 UTC boundary — when the night's games
+    are over. Game logs only change once a day, so they stay fresh until the
+    next boundary: the 18:00 refresh reuses the 06:20 one instead of
+    re-downloading every player (they were cached 6h, refreshes are 12h apart).
+    """
+    now = datetime.now(timezone.utc)
+    boundary = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    if now < boundary:
+        boundary -= timedelta(days=1)
+    return max(60, int((now - boundary).total_seconds()))
+
+
+# In-process copy of each player's game log for the current boundary: a
+# refresh grades every prop (and both sides) per player, and re-reading and
+# re-parsing the JSON cache file each time dominated grading time.
+_log_memo: dict[tuple, tuple[float, pd.DataFrame]] = {}
+
+
 # ---------------------------------------------------------------------------
 # Static lookups
 # ---------------------------------------------------------------------------
@@ -61,6 +81,23 @@ def _current_roster(season: str | None = None) -> dict[str, int]:
     roster = {norm_name(n): int(pid) for n, pid in zip(df.DISPLAY_FIRST_LAST, df.PERSON_ID)}
     cache_set(cache_key, roster)
     return roster
+
+
+def _current_roster_teams(season: str | None = None) -> dict[int, str]:
+    """Player ID → current team for everyone on a roster this season (one call, cached 12h)."""
+    season = season or config.DEFAULT_SEASON
+    cache_key = f"roster_teams_{season}"
+    cached = cache_get(cache_key, config.CACHE_TTL["player_team"])
+    if cached:
+        return {int(k): v for k, v in cached.items()}
+    try:
+        df = CommonAllPlayers(is_only_current_season=1, season=season, timeout=60).get_data_frames()[0]
+    except Exception as exc:
+        print(f"[nba_stats] CommonAllPlayers failed: {exc}")
+        return {}
+    teams = {int(pid): str(t).upper() for pid, t in zip(df.PERSON_ID, df.TEAM_ABBREVIATION) if t}
+    cache_set(cache_key, {str(k): v for k, v in teams.items()})
+    return teams
 
 
 def get_player_id(name: str) -> int | None:
@@ -215,9 +252,15 @@ def get_player_game_log(
     if season is None:
         season = config.DEFAULT_SEASON
     cache_key = f"gamelog_{player_id}_{season}_{season_type}"
-    cached = cache_get(cache_key, config.CACHE_TTL["game_log"])
+    ttl = game_data_ttl() if season == config.DEFAULT_SEASON else config.CACHE_TTL["prev_season"]
+    hit = _log_memo.get((player_id, season, season_type))
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1].copy()
+    cached = cache_get(cache_key, ttl)
     if cached:
-        return pd.DataFrame(cached)
+        df = pd.DataFrame(cached)
+        _log_memo[(player_id, season, season_type)] = (time.time(), df)
+        return df.copy()
 
     _sleep()
     try:
@@ -239,7 +282,8 @@ def get_player_game_log(
     df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
 
     cache_set(cache_key, df.to_dict(orient="records"))
-    return df
+    _log_memo[(player_id, season, season_type)] = (time.time(), df)
+    return df.copy()
 
 
 def get_player_game_log_prev_season(
@@ -325,7 +369,7 @@ def _get_overtime_game_ids(season: str | None = None) -> set[str]:
     if season is None:
         season = config.DEFAULT_SEASON
     cache_key = f"ot_game_ids_{season}"
-    cached = cache_get(cache_key, config.CACHE_TTL["game_log"])
+    cached = cache_get(cache_key, game_data_ttl())
     if cached is not None:
         return set(cached)
 
@@ -593,7 +637,21 @@ def _per_game_team_table(season: str) -> pd.DataFrame:
     return out
 
 
+_profile_memo: dict[tuple, tuple[float, dict | None]] = {}
+
+
 def get_opponent_defensive_profile(opponent_team_id: int, season: str | None = None) -> dict | None:
+    """Memoised for an hour — it's needed for every prop against this opponent."""
+    key = (opponent_team_id, season or config.DEFAULT_SEASON)
+    hit = _profile_memo.get(key)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    profile = _opponent_defensive_profile(opponent_team_id, season)
+    _profile_memo[key] = (time.time(), profile)
+    return profile
+
+
+def _opponent_defensive_profile(opponent_team_id: int, season: str | None = None) -> dict | None:
     """
     Return {OPP_PTS, OPP_AST, OPP_REB, OPP_FG3M, PACE, DEF_RATING}
     plus percentile ranks for the given opponent team.
@@ -667,7 +725,7 @@ def _get_raw_team_game_log(team_id: int, season: str | None = None) -> pd.DataFr
     if season is None:
         season = config.DEFAULT_SEASON
     cache_key = f"raw_team_log_{team_id}_{season}"
-    cached = cache_get(cache_key, config.CACHE_TTL["game_log"])
+    cached = cache_get(cache_key, game_data_ttl())
     if cached:
         return pd.DataFrame(cached)
 
@@ -836,6 +894,10 @@ def get_player_current_team(player_id: int) -> str | None:
     cached = cache_get(cache_key, config.CACHE_TTL["player_team"])
     if cached:
         return str(cached)
+    # One call covers every rostered player (vs one CommonPlayerInfo each)
+    team = _current_roster_teams().get(int(player_id))
+    if team:
+        return team
 
     _sleep()
     try:
