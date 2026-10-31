@@ -157,3 +157,15 @@ def quantile(mu: float, stat_col: str, q: float) -> int:
         if total >= q or j > 400:
             return j
     return 0
+
+
+def implied_mean(stat_col: str, line: float, p_over: float) -> float:
+    """The mean at which P(stat > line) = p_over (inverts prob_hit by bisection)."""
+    lo, hi = 0.01, max(4.0 * line + 10.0, 10.0)
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if prob_hit(mid, stat_col, line, "over") < p_over:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2

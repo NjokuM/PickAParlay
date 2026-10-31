@@ -30,13 +30,14 @@ L2_GRID = (30.0, 100.0, 300.0, 1000.0, 3000.0)
 EDGE_GRID = (0.02, 0.03, 0.04, 0.05, 0.06, 0.08)
 
 
-def fit_logistic(X, y, l2, iters=60):
-    """L2-regularised logistic regression (intercept unpenalised), Newton's method."""
+def fit_logistic(X, y, l2, iters=60, offset=None):
+    """L2-regularised logistic regression (intercept unpenalised), Newton's method, optional offset."""
     X1 = np.column_stack([np.ones(len(X)), X])
     w = np.zeros(X1.shape[1])
+    off = np.zeros(len(X)) if offset is None else offset
     pen = np.r_[0.0, np.full(X.shape[1], l2)]
     for _ in range(iters):
-        p = 1 / (1 + np.exp(-np.clip(X1 @ w, -30, 30)))
+        p = 1 / (1 + np.exp(-np.clip(off + X1 @ w, -30, 30)))
         step = np.linalg.solve(-(X1.T * (p * (1 - p))) @ X1 - np.diag(pen), X1.T @ (y - p) - pen * w)
         w -= step
         if np.abs(step).max() < 1e-9:
@@ -106,14 +107,14 @@ def oof_logits(df, scale, deep, l2, folds=5):
     for grp in np.array_split(dates, folds):
         test = df.date.isin(grp).values
         sc = fit_scale(df[~test], deep)
-        w = fit_logistic(design(df[~test], sc, deep), df.over_hit.values[~test].astype(float), l2)
-        z[test] = logit_of(design(df[test], sc, deep), w)
+        w = fit_logistic(design(df[~test], sc, deep), df.over_hit.values[~test].astype(float), l2, offset=df.mkt_logit.values[~test])
+        z[test] = logit_of(design(df[test], sc, deep), w)   # adjustment only
     return z
 
 
 def main(dataset_path, out_path, version="3.0"):
     df = pd.read_pickle(dataset_path).reset_index(drop=True)
-    deep = sorted(c for c in df.columns if c not in NON_FEATURES and c not in COMMON and c not in EXCLUDED)
+    deep = sorted(c for c in df.columns if c not in NON_FEATURES and c not in COMMON and c not in EXCLUDED and c != "mkt_logit")
     y = df.over_hit.values.astype(float)
     dates = sorted(df.date.unique())
     cut = dates[int(len(dates) * 0.6)]
@@ -126,8 +127,8 @@ def main(dataset_path, out_path, version="3.0"):
     Xtr, Xte = design(tr, sc, deep), design(te, sc, deep)
     best = None
     for l2 in L2_GRID:
-        w = fit_logistic(Xtr, tr.over_hit.values.astype(float), l2)
-        p = sigmoid(logit_of(Xte, w)); sv = side_view(te, p)
+        w = fit_logistic(Xtr, tr.over_hit.values.astype(float), l2, offset=tr.mkt_logit.values)
+        p = sigmoid(te.mkt_logit.values + logit_of(Xte, w)); sv = side_view(te, p)
         a, ll = auc(sv.p, sv.hit), logloss(p, te.over_hit.values)
         print(f"  l2={l2:6.0f}: forward AUC {a:.3f}  log-loss {ll:.4f}")
         if best is None or a > best[1] + 0.001 or (abs(a - best[1]) <= 0.001 and ll < best[2]):
@@ -137,9 +138,9 @@ def main(dataset_path, out_path, version="3.0"):
 
     # ── forward test, calibrated on the training period only ───────────
     z_tr_oof = oof_logits(tr, sc, deep, l2)
-    cal_w = fit_logistic(z_tr_oof.reshape(-1, 1), tr.over_hit.values.astype(float), 0.0)
-    w = fit_logistic(Xtr, tr.over_hit.values.astype(float), l2)
-    p_te = sigmoid(cal_w[0] + cal_w[1] * logit_of(Xte, w))
+    cal_w = fit_logistic(z_tr_oof.reshape(-1, 1), tr.over_hit.values.astype(float), 0.0, offset=tr.mkt_logit.values)
+    w = fit_logistic(Xtr, tr.over_hit.values.astype(float), l2, offset=tr.mkt_logit.values)
+    p_te = sigmoid(te.mkt_logit.values + cal_w[0] + cal_w[1] * logit_of(Xte, w))
     sv = side_view(te, p_te)
     print(f"FORWARD TEST (later weeks, never seen): AUC {auc(sv.p, sv.hit):.3f}  log-loss {logloss(p_te, te.over_hit.values):.4f}")
     print("  hit rate by score (score = chance of hitting):\n" + table(sv))
@@ -157,10 +158,10 @@ def main(dataset_path, out_path, version="3.0"):
 
     # ── final model on all dates ────────────────────────────────────────
     scale = fit_scale(df, deep)
-    w = fit_logistic(design(df, scale, deep), y, l2)
+    w = fit_logistic(design(df, scale, deep), y, l2, offset=df.mkt_logit.values)
     z_oof = oof_logits(df, scale, deep, l2)
-    cal = fit_logistic(z_oof.reshape(-1, 1), y, 0.0)
-    sv_all = side_view(df, sigmoid(cal[0] + cal[1] * z_oof))
+    cal = fit_logistic(z_oof.reshape(-1, 1), y, 0.0, offset=df.mkt_logit.values)
+    sv_all = side_view(df, sigmoid(df.mkt_logit.values + cal[0] + cal[1] * z_oof))
     print(f"ALL DATES, out-of-fold by date: AUC {auc(sv_all.p, sv_all.hit):.3f}")
     print(table(sv_all))
 

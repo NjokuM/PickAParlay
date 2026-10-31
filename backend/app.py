@@ -1200,6 +1200,38 @@ class GradeCustomRequest(BaseModel):
     side: str         # "over" or "under"
 
 
+def _custom_line_over_probability(player_id: int, market: str, line: float) -> float | None:
+    """
+    Fair P(over) for a user-entered line. If tonight's market has a line for
+    this player/market, back out the mean that price implies (no-vig) and
+    re-price the custom line with the same distribution. Otherwise use the
+    player's projection (season average blended with last season's prior).
+    """
+    from src.analysis import priors
+    stat = config.MARKET_MAP[market]["stat_key"] if callable(config.MARKET_MAP[market]["compute"]) else config.MARKET_MAP[market]["compute"]
+    try:
+        for p in _get_props_response():
+            if p["player_id"] == player_id and config.get_base_market(p["market"]) == market and p.get("market_probability"):
+                mkt_over = p["market_probability"] if p["side"] == "over" else 1 - p["market_probability"]
+                mu = priors.implied_mean(stat, p["line"], mkt_over)
+                return min(max(priors.prob_hit(mu, stat, line, "over"), 0.02), 0.98)
+    except Exception as exc:
+        print(f"[grade-custom] market lookup failed: {exc}")
+    try:
+        df = nba_stats.get_player_game_log_blended(player_id)
+        if df.empty:
+            return None
+        vals = df.apply(config.MARKET_MAP[market]["compute"], axis=1) if callable(config.MARKET_MAP[market]["compute"]) else df[stat]
+        prior = priors.get_player_prior(player_id)
+        k = priors.prior_weight(len(df), prior)
+        mu_prior = priors.prior_mean(prior, stat, df) if k > 0 else None
+        mu = float(vals.mean()) if mu_prior is None else (len(df) * float(vals.mean()) + k * mu_prior) / (len(df) + k)
+        return min(max(priors.prob_hit(mu, stat, line, "over"), 0.02), 0.98)
+    except Exception as exc:
+        print(f"[grade-custom] projection failed: {exc}")
+        return None
+
+
 @app.post("/api/grade-custom")
 def grade_custom_prop(req: GradeCustomRequest, _user: dict = Depends(require_user)) -> dict:
     """Grade a user-supplied prop through the 8-factor model."""
@@ -1240,14 +1272,18 @@ def grade_custom_prop(req: GradeCustomRequest, _user: dict = Depends(require_use
     except Exception:
         pass  # Non-fatal — blowout risk falls back to H2H + team style
 
-    # Build a PlayerProp with placeholder odds
+    # Price the custom line from the real market. The hit model starts from
+    # the bookmaker's price, so placeholder 1.90/1.90 odds made every custom
+    # line look like a coin flip (e.g. Lillard over 1.5 threes scored 39).
+    p_over = _custom_line_over_probability(req.player_id, base_market, req.line)
+    over_odds, under_odds = (1 / p_over, 1 / (1 - p_over)) if p_over else (1.90, 1.90)
     prop = PlayerProp(
         player_name=req.player_name,
         nba_player_id=req.player_id,
         market=req.market,
         line=req.line,
-        over_odds_decimal=1.90,
-        under_odds_decimal=1.90,
+        over_odds_decimal=over_odds,
+        under_odds_decimal=under_odds,
         bookmaker="custom",
         game=game,
         is_paddy_power=False,

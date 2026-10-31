@@ -20,7 +20,7 @@ import os
 
 # gp_log (games played) is deliberately left out: trained on March–April it
 # only proxied time of season, and early-season values sit far outside it.
-COMMON = ["mkt_logit", "line_log", "z_season", "z_last10", "z_last5", "z_minadj", "hit_season",
+COMMON = ["line_log", "z_season", "z_last10", "z_last5", "z_minadj", "hit_season",
           "hit_last10", "nb_logit", "min_trend", "home", "b2b", "teammates_out",
           "opp_out", "pace_idx", "z_opportunity"]
 Z_CLIP = 3.0   # standardised inputs are clipped so one unusual value can't dominate
@@ -32,9 +32,15 @@ _COEFS_PATH = os.path.join(os.path.dirname(__file__), "hit_model_coefs.json")
 _model: dict | None = None
 
 
+# The bookmaker's no-vig log-odds (features["mkt_logit"]) is an OFFSET: the
+# model starts from the market's own probability, unclipped and at full
+# strength, and learns only adjustments to it. (Learning a slope on main
+# lines — all priced ~35-65% — shrank it to ~0.4, so an 82% alt/custom line
+# came out near 51%.)
+
+
 def design_columns(deep_features: list[str]) -> list[str]:
-    return (COMMON + [f"is_{m}" for m in MARKETS[1:]] + [f"mkt_x_{m}" for m in MARKETS]
-            + list(deep_features))
+    return COMMON + [f"is_{m}" for m in MARKETS[1:]] + list(deep_features)
 
 
 def design_row(market: str, f: dict, scale: dict, deep_features: list[str]) -> list[float]:
@@ -52,7 +58,6 @@ def design_row(market: str, f: dict, scale: dict, deep_features: list[str]) -> l
 
     row = [z(c) for c in COMMON]
     row += [1.0 if market == m else 0.0 for m in MARKETS[1:]]
-    row += [f.get("mkt_logit", 0.0) if market == m else 0.0 for m in MARKETS]
     row += [z(c) for c in deep_features]
     return row
 
@@ -76,9 +81,9 @@ def predict_over(market: str, features: dict) -> float | None:
     if not m or market not in MARKETS or "mkt_logit" not in features:
         return None
     row = design_row(market, features, m["scale"], m["deep_features"])
-    z = m["intercept"] + sum(w * x for w, x in zip(m["coef"], row))
-    a, b = m["calibration"]
-    z = a + b * z
+    adj = m["intercept"] + sum(w * x for w, x in zip(m["coef"], row))
+    a, b = m["calibration"]                     # recalibrates the adjustment only
+    z = features["mkt_logit"] + a + b * adj
     return 1 / (1 + math.exp(-max(min(z, 30), -30)))
 
 
@@ -91,5 +96,5 @@ def contributions(market: str, features: dict, top: int = 4) -> list[tuple[str, 
     row = design_row(market, features, m["scale"], m["deep_features"])
     b = m["calibration"][1]
     contrib = [(c, b * w * x) for c, w, x in zip(cols, m["coef"], row)
-               if not c.startswith(("is_", "mkt_x_")) and c != "mkt_logit"]
+               if not c.startswith("is_")]
     return sorted(contrib, key=lambda t: -abs(t[1]))[:top]

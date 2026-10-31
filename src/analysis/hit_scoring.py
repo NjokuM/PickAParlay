@@ -4,9 +4,11 @@ Live scoring with the hit-probability model.
 For one prop and side: build the features (src/analysis/hit_features.py),
 get the chance it hits (src/analysis/hit_model.py), compare it with the
 market's no-vig chance, and explain it as a "Hit Model" factor. The value
-score is that chance on the familiar 0–100 scale (see config.HIT_SCORE_SCALE).
+score is that chance on the familiar 0–100 scale (see config.HIT_SCORE_STEEPNESS).
 """
 from __future__ import annotations
+
+import math
 
 import pandas as pd
 
@@ -40,8 +42,8 @@ FEATURE_LABELS = {
 }
 
 def score_from_probability(p: float) -> float:
-    """Chance of hitting → value score (50 = coin flip; 70 ≈ 58%; 80 ≈ 62%)."""
-    return round(min(100.0, max(0.0, 50.0 + config.HIT_SCORE_SCALE * (p - 0.5))), 1)
+    """Chance of hitting → value score (50 = coin flip; 58% ≈ 70; 62% ≈ 78; 80% ≈ 96)."""
+    return round(50.0 + 50.0 * math.tanh(config.HIT_SCORE_STEEPNESS * (p - 0.5)), 1)
 
 
 def _absences(team: str, date: str, injured: set[str], league_log: pd.DataFrame | None) -> float:
