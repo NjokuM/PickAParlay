@@ -682,6 +682,11 @@ def _build_props_response() -> list[dict]:
             "game_date": g.game_date,
             "suspicious_line": vp.suspicious_line,
             "suspicious_reason": vp.suspicious_reason,
+            # Hit model (v3): chance of hitting vs the market's no-vig chance
+            "hit_probability": vp.backing_data.get("hit_probability"),
+            "market_probability": vp.backing_data.get("market_probability"),
+            "edge": vp.backing_data.get("edge"),
+            "is_special": bool(vp.backing_data.get("is_special")),
             "factors": [
                 {
                     "name": f.name,
