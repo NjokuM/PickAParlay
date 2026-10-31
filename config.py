@@ -215,6 +215,19 @@ SCORE_LABELS: list[tuple[float, str]] = [
 
 MIN_VALUE_SCORE: float = 50.0   # Props below this are excluded from slips
 
+# The value score is the hit model's chance of hitting on a 0–100 scale:
+# score = 50 + HIT_SCORE_SCALE × (chance − 50%) → 50 = coin flip, 65 ≈ 56%,
+# 70 ≈ 58%, 80 ≈ 62%. Keeps the familiar range (labels above, UI colours).
+HIT_SCORE_SCALE: float = 250.0
+# Special picks: the model's chance beats the market's no-vig chance by the
+# trained edge threshold (hit_model_coefs.json) AND is at least this likely.
+SPECIAL_PICK_MIN_PROB: float = 0.55
+# The hit model was trained on players with 12+ games. Its player-stat
+# adjustments phase in from HIT_MODEL_MIN_GAMES (price + structural biases
+# only) to HIT_MODEL_FULL_GAMES (full model); special picks need the latter.
+HIT_MODEL_MIN_GAMES: int = 3
+HIT_MODEL_FULL_GAMES: int = 12
+
 # ---------------------------------------------------------------------------
 # Bet builder
 # ---------------------------------------------------------------------------
@@ -367,8 +380,11 @@ def get_market_label(market: str) -> str:
 #   1.x — everything graded before versioning existed (Feb–Oct 2026)
 #   2.0 — early-season priors: last-season per-minute player prior,
 #         blended team defence, honest confidence (Oct 2026)
+#   3.0 — value score = calibrated chance of hitting from the pooled hit
+#         model (src/analysis/hit_model.py), trained on 19K graded lines;
+#         special picks where it beats the market's no-vig price (Oct 2026)
 # ---------------------------------------------------------------------------
-MODEL_VERSION: str = "2.0"
+MODEL_VERSION: str = "3.0"
 LEGACY_MODEL_VERSION: str = "1.x"
 
 
@@ -393,7 +409,20 @@ def model_config_snapshot() -> dict:
                     BLOWOUT_PENALTY_BENCH, BLOWOUT_PENALTY_NON_COUNTING],
         "SCORE_LABELS": SCORE_LABELS,
         "MIN_VALUE_SCORE": MIN_VALUE_SCORE,
+        "HIT_MODEL": [HIT_SCORE_SCALE, SPECIAL_PICK_MIN_PROB, HIT_MODEL_MIN_GAMES,
+                      HIT_MODEL_FULL_GAMES, _hit_model_fingerprint()],
     }
+
+
+def _hit_model_fingerprint() -> str:
+    """Hash of the trained coefficients — a retrain becomes a new model version."""
+    import hashlib
+    path = os.path.join(os.path.dirname(__file__), "src", "analysis", "hit_model_coefs.json")
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha1(fh.read()).hexdigest()[:8]
+    except OSError:
+        return "missing"
 
 
 def model_version_id() -> str:

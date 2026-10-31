@@ -279,6 +279,11 @@ def init_db() -> None:
             "ALTER TABLE graded_props ADD COLUMN actual_value REAL",
             "ALTER TABLE graded_props ADD COLUMN actual_minutes REAL",
             "ALTER TABLE grading_runs ADD COLUMN model_version TEXT",
+            # Hit model (v3): chance of hitting, market's no-vig chance, the edge, special pick
+            "ALTER TABLE graded_props ADD COLUMN hit_prob REAL",
+            "ALTER TABLE graded_props ADD COLUMN market_prob REAL",
+            "ALTER TABLE graded_props ADD COLUMN edge REAL",
+            "ALTER TABLE graded_props ADD COLUMN is_special INTEGER DEFAULT 0",
         ):
             try:
                 conn.execute(ddl)
@@ -858,6 +863,37 @@ def _model_version_table(conn, min_score: int) -> list[dict]:
     return out
 
 
+def _special_picks_summary(conn) -> dict:
+    """
+    Special picks (model chance beats the market's no-vig price by the trained
+    edge — see src/analysis/hit_scoring.py), tracked separately: overall, per
+    model version, and per night.
+    """
+    ROI_EXPR = "CASE WHEN leg_result = 'HIT' THEN decimal_odds - 1 ELSE -1.0 END"
+    BASE = ("FROM graded_props WHERE is_special = 1 AND leg_result IS NOT NULL "
+            "AND decimal_odds IS NOT NULL AND decimal_odds > 1")
+
+    def summarise(r) -> dict:
+        n = r["n"] or 0
+        return {
+            "total": n,
+            "hits": r["hits"] or 0,
+            "hit_rate_pct": round((r["hits"] or 0) / n * 100, 1) if n else None,
+            "implied_prob_pct": round(r["impl"] * 100, 1) if r["impl"] else None,
+            "model_prob_pct": round(r["model"] * 100, 1) if r["model"] else None,
+            "roi_pct": round(r["roi"] / n * 100, 1) if n and r["roi"] is not None else None,
+        }
+
+    cols = (f"COUNT(*) AS n, SUM(leg_result = 'HIT') AS hits, SUM({ROI_EXPR}) AS roi, "
+            "AVG(1.0 / decimal_odds) AS impl, AVG(hit_prob) AS model")
+    overall = summarise(conn.execute(f"SELECT {cols} {BASE}").fetchone())
+    by_version = [{"version": r["model_version"], **summarise(r)} for r in conn.execute(
+        f"SELECT model_version, {cols} {BASE} GROUP BY model_version ORDER BY MIN(game_date)")]
+    by_night = [{"game_date": r["game_date"], **summarise(r)} for r in conn.execute(
+        f"SELECT game_date, {cols} {BASE} GROUP BY game_date ORDER BY game_date DESC LIMIT 30")]
+    return {**overall, "by_version": by_version, "by_night": by_night}
+
+
 def get_analytics(min_score: int = 65) -> dict:
     """
     Return accuracy analytics split by regular vs alt props.
@@ -877,6 +913,7 @@ def get_analytics(min_score: int = 65) -> dict:
         # ── Threshold comparison table (always at all 5 levels) ───────
         threshold_regular = _threshold_table(conn, is_alternate=0)
         by_model_version  = _model_version_table(conn, min_score)
+        special_picks     = _special_picks_summary(conn)
         threshold_alt     = _threshold_table(conn, is_alternate=1)
 
         # ── Slip-level stats (not split — slips can mix types) ────────
@@ -906,6 +943,7 @@ def get_analytics(min_score: int = 65) -> dict:
             # ── Model versions (regular props) ────────────────────────
             "by_model_version": by_model_version,
             "model_version":    config.model_version_id(),
+            "special_picks":    special_picks,
             # ── Slip stats (unchanged) ────────────────────────────────
             "slips": {
                 "total_slips": total_slips,
@@ -967,8 +1005,9 @@ def upsert_graded_props(
                     score_injury, score_team_context, score_season_avg,
                     score_blowout_risk, score_volume_context,
                     score_opponent_defense,
-                    is_active, graded_at, matchup, model_version, factors_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)
+                    is_active, graded_at, matchup, model_version, factors_json,
+                    hit_prob, market_prob, edge, is_special)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)
                    ON CONFLICT(player_name, market, line, side, game_date)
                    DO UPDATE SET
                      nba_player_id  = excluded.nba_player_id,
@@ -994,7 +1033,11 @@ def upsert_graded_props(
                      graded_at    = excluded.graded_at,
                      matchup      = excluded.matchup,
                      model_version = excluded.model_version,
-                     factors_json  = excluded.factors_json
+                     factors_json  = excluded.factors_json,
+                     hit_prob      = excluded.hit_prob,
+                     market_prob   = excluded.market_prob,
+                     edge          = excluded.edge,
+                     is_special    = excluded.is_special
                    RETURNING id""",
                 (
                     vp.prop.player_name, vp.prop.nba_player_id,
@@ -1017,6 +1060,10 @@ def upsert_graded_props(
                     matchup,
                     model_version,
                     _factors_json(vp.factors),
+                    vp.backing_data.get("hit_probability"),
+                    vp.backing_data.get("market_probability"),
+                    vp.backing_data.get("edge"),
+                    int(bool(vp.backing_data.get("is_special"))),
                 ),
             )
             # RETURNING gives the row id on both paths — cursor.lastrowid is
@@ -1406,7 +1453,8 @@ def get_prop_results(
                        score_consistency, score_opponent_defense, score_vs_opponent, score_home_away,
                        score_injury, score_team_context, score_season_avg,
                        score_blowout_risk, score_volume_context,
-                       model_version, actual_value, actual_minutes
+                       model_version, actual_value, actual_minutes,
+                       hit_prob, market_prob, edge, is_special
                 FROM graded_props
                 WHERE {where}
                 ORDER BY game_date DESC, value_score DESC

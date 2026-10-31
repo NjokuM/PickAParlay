@@ -388,6 +388,35 @@ export default function AnalyticsPage() {
         </div>
       )}
 
+      {/* ── Special Picks ── */}
+      {analyticsView === "regular" && data.special_picks && (
+        <div style={{ ...CARD, marginBottom: 16, border: "1px solid var(--accent)" }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: "var(--accent)" }}>★ Special Picks</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+            Picks where the model&apos;s chance beats the bookmaker&apos;s no-vig price by a clear margin, tracked separately.
+            They switch on once players have 12+ games this season.
+          </div>
+          {data.special_picks.total === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--muted)" }}>No graded special picks yet.</div>
+          ) : (
+            <div style={{ display: "flex", gap: isMobile ? 12 : 28, flexWrap: "wrap", fontSize: 13 }}>
+              {([
+                ["Picks", String(data.special_picks.total)],
+                ["Hit rate", data.special_picks.hit_rate_pct != null ? `${data.special_picks.hit_rate_pct.toFixed(1)}%` : "—"],
+                ["Model said", data.special_picks.model_prob_pct != null ? `${data.special_picks.model_prob_pct.toFixed(1)}%` : "—"],
+                ["Price implied", data.special_picks.implied_prob_pct != null ? `${data.special_picks.implied_prob_pct.toFixed(1)}%` : "—"],
+                ["ROI", data.special_picks.roi_pct != null ? `${data.special_picks.roi_pct > 0 ? "+" : ""}${data.special_picks.roi_pct.toFixed(1)}%` : "—"],
+              ] as [string, string][]).map(([label, value]) => (
+                <div key={label}>
+                  <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>{label}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700 }}>{value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Model Versions ── */}
       {analyticsView === "regular" && data.by_model_version && data.by_model_version.length > 0 && (
         <div style={{ ...CARD, marginBottom: 16 }}>

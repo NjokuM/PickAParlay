@@ -84,6 +84,19 @@ export default function DashboardPage() {
     : b[sortKey] - a[sortKey]
   );
 
+  // Special picks: the model's chance beats the market price by a clear margin.
+  // Show each player's strongest one (all of them are highlighted in the list).
+  const specials = Object.values(
+    props.filter(p => p.is_special).reduce<Record<string, Prop>>((acc, p) => {
+      const k = String(p.player_id);
+      if (!acc[k] || (p.edge ?? 0) > (acc[k].edge ?? 0)) acc[k] = p;
+      return acc;
+    }, {})
+  ).sort((a, b) => (b.edge ?? 0) - (a.edge ?? 0)).slice(0, 10);
+  const specialCount = props.filter(p => p.is_special).length;
+  const SPECIAL_BG = "rgba(240,185,11,0.10)";
+  const pct = (v?: number | null) => (v == null ? "—" : `${Math.round(v * 100)}%`);
+
   const S: React.CSSProperties = {
     background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6,
     padding: "6px 10px", color: "var(--text)", fontSize: 13, outline: "none",
@@ -195,6 +208,37 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* Tonight's special picks */}
+      {specials.length > 0 && (
+        <div style={{ background: SPECIAL_BG, border: "1px solid var(--accent)", borderRadius: 8, padding: isMobile ? 10 : 14, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>★ Tonight&apos;s Special Picks</div>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>
+              Model&apos;s chance beats the bookmaker&apos;s price · {specialCount} highlighted below
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {specials.map(p => (
+              <div key={`sp-${p.player_id}-${p.market}-${p.line}-${p.side}`} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, flexWrap: "wrap" }}>
+                <ScoreBadge score={p.value_score} />
+                <span style={{ fontWeight: 600, minWidth: isMobile ? 0 : 160 }}>{p.player_name}</span>
+                <span>
+                  <span style={{ fontSize: 10, fontWeight: 700, marginRight: 3, color: p.side === "under" ? "var(--orange)" : "var(--accent)" }}>
+                    {(p.side ?? "over").toUpperCase()}
+                  </span>
+                  {p.line} {p.market_label}
+                </span>
+                <span style={{ color: "var(--accent)" }}>{formatOdds(p.over_odds, format)}</span>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                  {pct(p.hit_probability)} chance vs {pct(p.market_probability)} priced
+                </span>
+                {!isMobile && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: "auto" }}>{p.game}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Sort + count */}
       <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ color: "var(--muted)", fontSize: 12 }}>Sort:</span>
@@ -220,7 +264,8 @@ export default function DashboardPage() {
             const isX = expanded === expandKey;
             return (
               <div key={key} style={{
-                background: "var(--surface)", border: "1px solid var(--border)",
+                background: p.is_special ? SPECIAL_BG : "var(--surface)",
+                border: p.is_special ? "1px solid var(--accent)" : "1px solid var(--border)",
                 borderRadius: 10, overflow: "hidden",
               }}>
                 <div
@@ -258,6 +303,8 @@ export default function DashboardPage() {
                         {bookmakerLabel(p.bookmaker)}
                       </span>
                       <RecoBadge reco={p.recommendation} />
+                      {p.is_special && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)" }}>★ SPECIAL</span>}
+                      {p.hit_probability != null && <span style={{ fontSize: 11, color: "var(--muted)" }}>{pct(p.hit_probability)} chance</span>}
                       {p.suspicious_line && <span style={{ fontSize: 10, color: "var(--orange)" }}>⚠</span>}
                     </div>
                     {p.prop_id && (
@@ -318,12 +365,14 @@ export default function DashboardPage() {
             const isX = expanded === expandKey;
             return (
               <div key={key}>
-                <div onClick={() => setExpanded(isX ? null : expandKey)} style={{ display: "grid", gridTemplateColumns: "48px 52px 1fr 130px 80px 56px 72px 110px 52px 20px", gap: "0 10px", padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: isX ? "var(--surface2)" : "transparent", alignItems: "center" }}>
+                <div onClick={() => setExpanded(isX ? null : expandKey)} style={{ display: "grid", gridTemplateColumns: "48px 52px 1fr 130px 80px 56px 72px 110px 52px 20px", gap: "0 10px", padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: isX ? "var(--surface2)" : p.is_special ? SPECIAL_BG : "transparent", boxShadow: p.is_special ? "inset 3px 0 0 var(--accent)" : "none", alignItems: "center" }}>
                   <ScoreBadge score={p.value_score} />
                   <PlayerHeadshot playerId={p.player_id} size={40} />
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{p.player_name}</div>
                     <RecoBadge reco={p.recommendation} />
+                    {p.is_special && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", marginLeft: 6 }}>★ SPECIAL</span>}
+                    {p.hit_probability != null && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 6 }}>{pct(p.hit_probability)} chance</span>}
                     {p.suspicious_line && <span style={{ fontSize: 10, color: "var(--orange)", marginLeft: 6 }}>⚠ suspicious</span>}
                   </div>
                   <div style={{ fontSize: 13 }}>{p.market_label}</div>

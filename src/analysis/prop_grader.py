@@ -19,7 +19,7 @@ from src.api.nba_stats import (
     get_player_current_team,
 )
 from src.api.odds_api import get_game_spread
-from src.analysis import priors
+from src.analysis import hit_scoring, priors
 from src.analysis.context_filter import apply_context_weights
 from src.analysis.factors import (
     consistency,
@@ -205,7 +205,17 @@ def grade_prop(
         f_volume,
     ]
 
-    value_score = compute_value_score(factors)
+    # Value score = the hit model's chance of hitting (falls back to the
+    # factor-weighted score if the model can't run, e.g. no prices).
+    hit = hit_scoring.score(
+        prop, side, df_raw, stat_col, base_market,
+        player_team_abbr, opponent_abbr, tonight_is_home, injury_reports, season,
+    )
+    if hit:
+        factors.append(hit["factor"])
+        value_score = hit_scoring.score_from_probability(hit["p_side"])
+    else:
+        value_score = compute_value_score(factors)
     recommendation = label_recommendation(value_score)
 
     # --- Suspicious line detection ---
@@ -226,6 +236,10 @@ def grade_prop(
             "side": side,
             "returning_from_injury": return_info["is_returning"],
             "games_since_return": return_info.get("games_since_return", 0),
+            "hit_probability": round(hit["p_side"], 4) if hit else None,
+            "market_probability": round(hit["p_market"], 4) if hit else None,
+            "edge": round(hit["edge"], 4) if hit else None,
+            "is_special": bool(hit and hit["is_special"]),
         },
         suspicious_line=suspicious,
         suspicious_reason=suspicious_reason,

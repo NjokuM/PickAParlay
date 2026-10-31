@@ -78,6 +78,11 @@ export interface Prop {
   game_date: string;
   suspicious_line: boolean;
   suspicious_reason: string;
+  // Hit model (v3): chance of hitting vs the market's no-vig chance
+  hit_probability?: number | null;
+  market_probability?: number | null;
+  edge?: number | null;
+  is_special?: boolean;
   factors: Factor[];
   backing_data: Record<string, unknown>;
 }
@@ -177,6 +182,20 @@ export interface ModelVersionRow {
   roi_pct: number | null;
 }
 
+export interface SpecialPickStats {
+  total: number;
+  hits: number;
+  hit_rate_pct: number | null;
+  implied_prob_pct: number | null;
+  model_prob_pct: number | null;
+  roi_pct: number | null;
+}
+
+export interface SpecialPicks extends SpecialPickStats {
+  by_version: (SpecialPickStats & { version: string })[];
+  by_night: (SpecialPickStats & { game_date: string })[];
+}
+
 export interface PickAnalytics {
   picks: {
     total: number; hits: number; misses: number; hit_rate: number;
@@ -213,6 +232,7 @@ export interface Analytics extends PickAnalytics {
   // Per model version (regular props) + the version currently grading
   by_model_version?: ModelVersionRow[];
   model_version?: string;
+  special_picks?: SpecialPicks;
   // Slip stats (not split by type)
   slips: {
     total_slips: number;

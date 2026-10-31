@@ -39,3 +39,6 @@ env/
 # Next.js build artifacts
 frontend/.next/
 frontend/node_modules/
+
+# Research data (re-fetchable from APIs)
+research/**/.data/
