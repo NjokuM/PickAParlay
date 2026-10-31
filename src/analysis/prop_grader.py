@@ -212,7 +212,10 @@ def grade_prop(
         prop, side, df_raw, stat_col, base_market,
         player_team_abbr, opponent_abbr, tonight_is_home, injury_reports, season,
     )
-    if hit:
+    # config.SCORE_SOURCE: "factors" = the v2 factor-weighted score (live);
+    # "hit_model" = v3 chance of hitting. The hit model always runs and is
+    # stored (shadow) so the two can be compared on the same picks.
+    if hit and config.SCORE_SOURCE == "hit_model":
         factors.append(hit["factor"])
         value_score = hit_scoring.score_from_probability(hit["p_side"])
     else:
@@ -240,7 +243,7 @@ def grade_prop(
             "hit_probability": round(hit["p_side"], 4) if hit else None,
             "market_probability": round(hit["p_market"], 4) if hit else None,
             "edge": round(hit["edge"], 4) if hit else None,
-            "is_special": bool(hit and hit["is_special"]),
+            "is_special": bool(hit and hit["is_special"] and config.SCORE_SOURCE == "hit_model"),
         },
         suspicious_line=suspicious,
         suspicious_reason=suspicious_reason,

@@ -389,8 +389,14 @@ def get_market_label(market: str) -> str:
 #   3.2 — bookmaker's no-vig price is an offset (model learns adjustments
 #         only), so favourites/alt lines keep their probability; smooth
 #         score curve; custom lines priced from the market (Oct 2026)
+#   2.1 — back to the v2 factor-weighted score (user preference, Oct 31
+#         2026), keeping the 3.x-era fixes; hit model runs in shadow only
 # ---------------------------------------------------------------------------
-MODEL_VERSION: str = "3.2"
+MODEL_VERSION: str = "2.1"
+# Which model sets the value score: "factors" (v2 weighted factors) or
+# "hit_model" (v3 chance of hitting). The hit model's chance/edge are stored
+# either way (graded_props.hit_prob / edge) for side-by-side comparison.
+SCORE_SOURCE: str = "factors"
 LEGACY_MODEL_VERSION: str = "1.x"
 
 
@@ -415,6 +421,7 @@ def model_config_snapshot() -> dict:
                     BLOWOUT_PENALTY_BENCH, BLOWOUT_PENALTY_NON_COUNTING],
         "SCORE_LABELS": SCORE_LABELS,
         "MIN_VALUE_SCORE": MIN_VALUE_SCORE,
+        "SCORE_SOURCE": SCORE_SOURCE,
         "HIT_MODEL": [HIT_SCORE_STEEPNESS, SPECIAL_PICK_MIN_PROB, HIT_MODEL_MIN_GAMES,
                       HIT_MODEL_FULL_GAMES, _hit_model_fingerprint()],
     }
