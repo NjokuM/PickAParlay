@@ -91,15 +91,23 @@ def _parse_minutes(raw) -> float | None:
         return None
 
 
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
 def _norm_name(name: str) -> str:
     """
     Normalise a player name for matching OddsAPI names to NBA box scores:
-    strip accents (Jokić → jokic) and punctuation (C.J. → cj, Jr. → jr).
+    strip accents (Jokić → jokic), punctuation (C.J. → cj) and generational
+    suffixes — the two sources disagree on them ("Derrick Jones" vs
+    "Derrick Jones Jr.", "Paul Reed Jr" vs "Paul Reed").
     """
     name = unicodedata.normalize("NFKD", name)
     name = "".join(c for c in name if not unicodedata.combining(c))
     name = re.sub(r"[.'’]", "", name.lower())
-    return " ".join(name.replace("-", " ").split())
+    parts = name.replace("-", " ").split()
+    while len(parts) > 2 and parts[-1] in _NAME_SUFFIXES:
+        parts.pop()
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------

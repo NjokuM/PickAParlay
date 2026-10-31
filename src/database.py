@@ -1068,12 +1068,17 @@ def _finalize_graded_props_conn(
 
     placeholders = ",".join("?" * len(upserted_ids))
 
-    # Mark stale: props of the SAME type for this date NOT in this ID set → inactive
+    # Mark stale: props of the SAME type for this date NOT in this ID set → inactive.
+    # Only within games this refresh covered — a refresh after some games have
+    # tipped off only re-grades the remaining games, and must not deactivate
+    # (and drop from analytics) the props of games already under way.
     conn.execute(
         f"""UPDATE graded_props SET is_active = 0
             WHERE game_date = ? AND is_alternate = ?
-              AND id NOT IN ({placeholders})""",
-        [game_date, batch_is_alt] + upserted_ids,
+              AND id NOT IN ({placeholders})
+              AND matchup IN (SELECT DISTINCT matchup FROM graded_props
+                              WHERE id IN ({placeholders}))""",
+        [game_date, batch_is_alt] + upserted_ids + upserted_ids,
     )
 
     # Compute is_best_side within the SAME type only: for each
