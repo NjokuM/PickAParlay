@@ -35,6 +35,8 @@ FEATURE_LABELS = {
     "cs_share": "catch-and-shoot share", "fg3a_pg": "3-point attempts", "fg3_pct_shrunk": "3-point %",
     "opp_mix_idx": "3s the opponent allows for his shot type",
     "opp_fg3a_allowed_idx": "3s the opponent allows",
+    "role_boost": "production freed up by injured teammates in his role",
+    "role_minutes": "extra minutes from injured teammates in his role",
 }
 
 def score_from_probability(p: float) -> float:
@@ -48,6 +50,20 @@ def _absences(team: str, date: str, injured: set[str], league_log: pd.DataFrame 
         return 0.0
     t = league_log[league_log.TEAM_ABBREVIATION == team]
     return hit_features.team_absences(t, date, tonight_out=injured, norm=_norm_name) if not t.empty else 0.0
+
+
+_role_memo: dict[tuple, dict] = {}
+
+
+def _role(team: str, date: str, injured: set[str], league_log: pd.DataFrame | None) -> dict:
+    """Role-matched absorption of tonight's absences for one team (hit_features.role_absorption), memoised."""
+    if league_log is None:
+        return {}
+    key = (team, date, hash(frozenset(injured)))
+    if key not in _role_memo:
+        t = league_log[league_log.TEAM_ABBREVIATION == team]
+        _role_memo[key] = hit_features.role_absorption(t, date, tonight_out=injured, norm=_norm_name) if not t.empty else {}
+    return _role_memo[key]
 
 
 def score(
@@ -79,6 +95,7 @@ def score(
         "rest_days": rest_days,
         "teammates_out_min": _absences(team, prop.game.game_date, injured, league_log),
         "opp_out_min": _absences(opp, prop.game.game_date, injured, league_log),
+        "role_absorption": _role(team, prop.game.game_date, injured, league_log).get(prop.nba_player_id, {}),
     }
     features = hit_features.build_features(stat, prop.line, p_mkt_over, log,
                                            league_tables.get_snapshot(season) or {}, ctx, allow_partial=True)
@@ -112,6 +129,11 @@ def score(
         evidence.append("Helping: " + ", ".join(helping))
     if against:
         evidence.append("Against: " + ", ".join(against))
+    role = ctx["role_absorption"]
+    extra_stat = sum(role.get(c, 0.0) for c in hit_features.STAT_COMPONENTS[stat])
+    if abs(role.get("MIN", 0.0)) >= 1.0 or abs(extra_stat) >= 0.5:
+        evidence.append(f"Injuries vs usual: {role.get('MIN', 0.0):+.1f} min and {extra_stat:+.1f} {stat} "
+                        f"expected from absent teammates in a similar role")
     if w < 1.0:
         evidence.append(f"Early season — {games} games played, so player stats count {w:.0%} "
                         f"(full weight from {config.HIT_MODEL_FULL_GAMES} games); special picks start then")

@@ -383,8 +383,10 @@ def get_market_label(market: str) -> str:
 #   3.0 — value score = calibrated chance of hitting from the pooled hit
 #         model (src/analysis/hit_model.py), trained on 19K graded lines;
 #         special picks where it beats the market's no-vig price (Oct 2026)
+#   3.1 — role-aware injuries: absent teammates' minutes and production go
+#         to players in a similar role (hit_features.role_absorption) (Oct 2026)
 # ---------------------------------------------------------------------------
-MODEL_VERSION: str = "3.0"
+MODEL_VERSION: str = "3.1"
 LEGACY_MODEL_VERSION: str = "1.x"
 
 

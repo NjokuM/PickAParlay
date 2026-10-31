@@ -21,7 +21,7 @@ from collections import defaultdict
 import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from src.analysis.hit_features import build_features, team_absences  # noqa: E402
+from src.analysis.hit_features import build_features, role_absorption, team_absences  # noqa: E402
 
 MARKET_STAT = {
     "player_points": "PTS", "player_rebounds": "REB", "player_assists": "AST",
@@ -77,6 +77,14 @@ def main(season, props_path, log_path, snap_path, out_path, last_date=None):
             memo[(team, game_id)] = 0.0 if t is None else team_absences(t, date, tonight_game_id=game_id)
         return memo[(team, game_id)]
 
+    role_memo: dict[tuple, dict] = {}
+
+    def role_for(team: str, game_id: str, date: str, pid: int) -> dict:
+        if (team, game_id) not in role_memo:
+            t = team_games.get(team)
+            role_memo[(team, game_id)] = {} if t is None else role_absorption(t, date, tonight_game_id=game_id)
+        return role_memo[(team, game_id)].get(pid, {})
+
     rows, skipped = [], defaultdict(int)
     for r in lines.itertuples():
         p = by_player.get(r.player_id)
@@ -94,7 +102,8 @@ def main(season, props_path, log_path, snap_path, out_path, last_date=None):
         rest = (pd.Timestamp(r.date) - pd.Timestamp(before.GAME_DATE.iloc[-1])).days if len(before) else 9
         ctx = dict(player_id=r.player_id, team=g.TEAM_ABBREVIATION, opp=opp, is_home=home, rest_days=rest,
                    teammates_out_min=regulars_out(g.TEAM_ABBREVIATION, g.GAME_ID, r.date),
-                   opp_out_min=regulars_out(opp, g.GAME_ID, r.date))
+                   opp_out_min=regulars_out(opp, g.GAME_ID, r.date),
+                   role_absorption=role_for(g.TEAM_ABBREVIATION, g.GAME_ID, r.date, r.player_id))
         f = build_features(r.stat, r.line, r.p_mkt_over, before, snaps[r.date], ctx)
         if f is None:
             skipped["< 5 prior games"] += 1; continue

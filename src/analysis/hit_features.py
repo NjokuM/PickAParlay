@@ -106,6 +106,78 @@ def team_absences(
     return tonight - (sum(usual) / len(usual) if usual else 0.0)
 
 
+ROLE_COMPONENTS = ("PTS", "REB", "AST", "FG3A", "FG3M", "MIN")
+
+
+def _role_profile(rows: pd.DataFrame) -> np.ndarray:
+    """Per-36 role vector — rebounds, assists, 3PA, 2PA — unit length."""
+    m = max(float(rows.MIN.sum()), 1.0)
+    v = np.array([rows.REB.sum(), rows.AST.sum(), rows.FG3A.sum(), (rows.FGA - rows.FG3A).sum()], float) / m * 36
+    n = np.linalg.norm(v)
+    return v / n if n else v
+
+
+def role_absorption(
+    team_log: pd.DataFrame,
+    date: str,
+    tonight_game_id: str | None = None,
+    tonight_out: set[str] | None = None,
+    norm=lambda name: name,
+    regular_mpg: float = 10.0,
+) -> dict[int, dict[str, float]]:
+    """
+    What each teammate is expected to absorb from tonight's absentees, by role,
+    minus what they usually absorb (average over the team's last 10 games).
+
+    Each missing regular's per-game production (points, rebounds, assists,
+    3PA, 3PM, minutes) is handed to the players who ARE playing in proportion
+    to role similarity (per-36 profile) × their own share of that stat — so a
+    backup guard's minutes go mostly to guards, and his rebounds mostly to the
+    team's rebounders. Returns {player_id: {stat: expected extra per game}}.
+    Backtest (2025-26): adds to minutes-missing alone, most for assists (+72%
+    explained variance) and rebounds (+28%).
+    """
+    before = team_log[team_log.GAME_DATE < date]
+    if before.empty:
+        return {}
+    games = before.drop_duplicates("GAME_ID").sort_values("GAME_DATE").tail(10)
+    recent = before[before.GAME_ID.isin(games.GAME_ID)]
+    agg = before.groupby("PLAYER_ID").agg(gp=("GAME_ID", "size"), name=("PLAYER_NAME", "first"),
+                                          **{c: (c, "mean") for c in ROLE_COMPONENTS})
+    regs = agg[(agg.gp >= 5) & (agg.MIN >= regular_mpg) & agg.index.isin(recent.PLAYER_ID)]
+    if regs.empty:
+        return {}
+    prof = {pid: _role_profile(before[before.PLAYER_ID == pid]) for pid in regs.index}
+
+    def absorbed(playing: set) -> dict[int, dict[str, float]]:
+        active = regs[regs.index.isin(playing)]
+        absent = regs[~regs.index.isin(playing)]
+        out = {pid: dict.fromkeys(ROLE_COMPONENTS, 0.0) for pid in active.index}
+        for a in absent.index:
+            sims = {p: max(0.0, float(prof[p] @ prof[a])) for p in active.index}
+            for c in ROLE_COMPONENTS:
+                tot = sum(sims[p] * active.at[p, c] for p in active.index)
+                if tot > 0:
+                    for p in active.index:
+                        out[p][c] += absent.at[a, c] * sims[p] * active.at[p, c] / tot
+        return out
+
+    if tonight_game_id is not None:
+        tonight_playing = set(team_log.loc[team_log.GAME_ID == tonight_game_id, "PLAYER_ID"])
+    else:
+        out_names = tonight_out or set()
+        tonight_playing = {pid for pid, n in zip(regs.index, regs.name) if norm(n) not in out_names}
+    tonight = absorbed(tonight_playing)
+    usual: dict[int, dict[str, list]] = {}
+    for gid in games.GAME_ID:
+        for pid, vals in absorbed(set(recent.loc[recent.GAME_ID == gid, "PLAYER_ID"])).items():
+            for c, v in vals.items():
+                usual.setdefault(pid, {}).setdefault(c, []).append(v)
+    return {pid: {c: v - (float(np.mean(usual[pid][c])) if pid in usual and usual[pid].get(c) else 0.0)
+                  for c, v in vals.items()}
+            for pid, vals in tonight.items()}
+
+
 def build_features(
     stat: str,
     line: float,
@@ -155,6 +227,12 @@ def build_features(
         "opp_out": float(ctx.get("opp_out_min") or 0.0) / 10.0,
         "pace_idx": (_idx(snap, "tadv", team, "PACE") + _idx(snap, "tadv", opp, "PACE")) / 2,
     }
+    # Role-aware injury effect (role_absorption): this stat absorbed directly
+    # from missing teammates, and extra minutes × the player's own rate.
+    role = ctx.get("role_absorption") or {}
+    comps_ = STAT_COMPONENTS[stat]
+    f["role_boost"] = sum(role.get(c, 0.0) for c in comps_) / sd
+    f["role_minutes"] = role.get("MIN", 0.0) * rate / sd
     comps = set(STAT_COMPONENTS[stat])
 
     # Opportunity-based projection: chances are steadier than conversions, so
