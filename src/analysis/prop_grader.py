@@ -63,10 +63,11 @@ def grade_prop(
     df_raw = get_player_game_log_blended(prop.nba_player_id, season=season)
 
     # Early-season prior from last season's per-minute rates (fades out by 40 GP).
-    # With a prior, 3 games are enough to grade; without one (rookies) we need 5.
+    # Everyone who has played is graded — dropping players with few games hid
+    # rookies and returning players (e.g. Lillard, 4 games). The hit model leans
+    # on the market price until a player has enough games (hit_scoring).
     prior = priors.get_player_prior(prop.nba_player_id, season=season)
-    min_games = config.MIN_GAMES_WITH_PRIOR if prior else config.MIN_GAMES_PLAYED
-    if df_raw.empty or len(df_raw) < min_games:
+    if df_raw.empty:
         return None
     prior_k = priors.prior_weight(len(df_raw), prior)
     prior_mu = priors.prior_mean(prior, stat_col, df_raw) if prior_k > 0 else None

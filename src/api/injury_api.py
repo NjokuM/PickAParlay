@@ -91,18 +91,16 @@ def get_injury_report() -> list[InjuryReport]:
 
 def get_player_status(player_name: str, reports: list[InjuryReport]) -> str | None:
     """
-    Look up a player's injury status from the report list.
-    Uses fuzzy matching. Returns None if not found (assumed healthy).
+    Look up a player's injury status from the report list. Returns None if
+    not found (assumed healthy). Exact name match after normalising (accents,
+    punctuation, suffixes, short first names) — fuzzy matching marked SGA
+    "out" because Trey Alexander was.
     """
-    from thefuzz import process
-
-    if not reports:
-        return None
-
-    names = [r.player_name for r in reports]
-    match, score = process.extractOne(player_name, names)
-    if score < 80:
-        return None
+    from src.names import same_player
+    for r in reports or []:
+        if same_player(player_name, r.player_name):
+            return r.status
+    return None
 
     for r in reports:
         if r.player_name == match:

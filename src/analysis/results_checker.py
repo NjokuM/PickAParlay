@@ -27,6 +27,7 @@ import unicodedata
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import config
+from src.names import norm_name
 from src.database import (
     get_unresolved_graded_props,
     get_unresolved_legs,
@@ -91,23 +92,7 @@ def _parse_minutes(raw) -> float | None:
         return None
 
 
-_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
-
-
-def _norm_name(name: str) -> str:
-    """
-    Normalise a player name for matching OddsAPI names to NBA box scores:
-    strip accents (Jokić → jokic), punctuation (C.J. → cj) and generational
-    suffixes — the two sources disagree on them ("Derrick Jones" vs
-    "Derrick Jones Jr.", "Paul Reed Jr" vs "Paul Reed").
-    """
-    name = unicodedata.normalize("NFKD", name)
-    name = "".join(c for c in name if not unicodedata.combining(c))
-    name = re.sub(r"[.'’]", "", name.lower())
-    parts = name.replace("-", " ").split()
-    while len(parts) > 2 and parts[-1] in _NAME_SUFFIXES:
-        parts.pop()
-    return " ".join(parts)
+_norm_name = norm_name   # shared with live grading (src/names.py)
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ from nba_api.stats.endpoints import (
     LeagueGameLog,
     CommonPlayerInfo,
     CommonTeamRoster,
+    CommonAllPlayers,
 )
 from nba_api.stats.static import players as nba_players_static
 from nba_api.stats.static import teams as nba_teams_static
@@ -44,16 +45,46 @@ def _sleep() -> None:
 # Static lookups
 # ---------------------------------------------------------------------------
 
+def _current_roster(season: str | None = None) -> dict[str, int]:
+    """Normalised name → player ID for everyone on a roster this season (incl. rookies). Cached 12h."""
+    from src.names import norm_name
+    season = season or config.DEFAULT_SEASON
+    cache_key = f"roster_ids_{season}"
+    cached = cache_get(cache_key, config.CACHE_TTL["player_team"])
+    if cached:
+        return cached
+    try:
+        df = CommonAllPlayers(is_only_current_season=1, season=season, timeout=60).get_data_frames()[0]
+    except Exception as exc:
+        print(f"[nba_stats] CommonAllPlayers failed: {exc}")
+        return {}
+    roster = {norm_name(n): int(pid) for n, pid in zip(df.DISPLAY_FIRST_LAST, df.PERSON_ID)}
+    cache_set(cache_key, roster)
+    return roster
+
+
 def get_player_id(name: str) -> int | None:
-    """Fuzzy player name → nba_api player ID."""
-    from thefuzz import process
-    all_players = nba_players_static.get_players()
-    names = [p["full_name"] for p in all_players]
-    match, score = process.extractOne(name, names)
-    if score < 75:
-        return None
-    for p in all_players:
-        if p["full_name"] == match:
+    """
+    Odds-feed player name → NBA player ID. Current rosters first (nba_api's
+    static list lacks rookies, and loose fuzzy matching sent "Cameron Boozer"
+    to Carlos Boozer), exact after normalising, then short first names,
+    then a strict fuzzy match; the static list only as a last resort.
+    """
+    from thefuzz import fuzz, process
+    from src.names import norm_name, same_player
+    key = norm_name(name)
+    roster = _current_roster()
+    if key in roster:
+        return roster[key]
+    for other, pid in roster.items():
+        if same_player(key, other):
+            return pid
+    if roster:
+        match, score = process.extractOne(key, list(roster), scorer=fuzz.token_sort_ratio)
+        if score >= 92:
+            return roster[match]
+    for p in nba_players_static.get_players():
+        if norm_name(p["full_name"]) == key:
             return p["id"]
     return None
 
