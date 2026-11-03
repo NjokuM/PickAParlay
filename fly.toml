@@ -24,6 +24,20 @@ primary_region = 'lhr'
   auto_start_machines = true
   min_machines_running = 1
 
+  # Liveness check: if the machine hangs or the backend/frontend/Caddy chain
+  # dies (e.g. an OOM kill mid-refresh), Fly restarts it automatically instead
+  # of leaving a dead machine silently serving nothing until someone notices.
+  # Hits /api/credits — same endpoint start.sh already polls for readiness —
+  # deliberately NOT /api/status, since that reflects data/business health
+  # (low credits, a failed refresh) and would cause Fly to restart a perfectly
+  # healthy process over a problem a restart can't fix.
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "90s"
+    method = "GET"
+    path = "/api/credits"
+
 [[vm]]
   size = 'shared-cpu-1x'
   memory = '2048mb'
