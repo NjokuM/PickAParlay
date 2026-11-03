@@ -54,6 +54,13 @@ ODDS_API_KEYS: list[str] = _parse_api_keys()
 ODDS_API_KEY: str = ODDS_API_KEYS[0] if ODDS_API_KEYS else ""  # backwards compat
 
 # ---------------------------------------------------------------------------
+# Failure alerting — generic webhook (Slack/Discord/ntfy-compatible JSON body).
+# Unset by default: alerts.send_alert() then just prints instead of posting.
+# Set as a Fly secret: fly secrets set ALERT_WEBHOOK_URL=https://hooks.slack.com/...
+# ---------------------------------------------------------------------------
+ALERT_WEBHOOK_URL: str = os.getenv("ALERT_WEBHOOK_URL", "")
+
+# ---------------------------------------------------------------------------
 # Factor weights — must sum to 1.0
 # ---------------------------------------------------------------------------
 FACTOR_WEIGHTS: dict[str, float] = {

@@ -302,6 +302,26 @@ export interface ScheduleInfo {
   last_grade: string | null;
 }
 
+export interface JobRunSummary {
+  job_name: string;
+  trigger: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  detail: string | null;
+  error: string | null;
+}
+
+export interface StatusInfo {
+  healthy: boolean;
+  problems: string[];
+  today_has_props: boolean;
+  credits_remaining: number;
+  last_refresh: JobRunSummary | null;
+  last_results_check: JobRunSummary | null;
+  last_alt_refresh: JobRunSummary | null;
+}
+
 export interface Game {
   game_id: string;
   home_team: string;
@@ -456,6 +476,8 @@ export const api = {
   credits: () => get<Credits>("/api/credits"),
 
   schedule: () => get<ScheduleInfo>("/api/schedule"),
+
+  status: () => get<StatusInfo>("/api/status"),
 
   tonightPlayers: () => get<TonightPlayer[]>("/api/players"),
 

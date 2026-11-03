@@ -4,7 +4,7 @@ import "./globals.css";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api, Credits, ScheduleInfo } from "@/lib/api";
+import { api, Credits, ScheduleInfo, StatusInfo } from "@/lib/api";
 import { SlipBuilderProvider } from "@/lib/slip-builder-context";
 import SlipBuilderPanel from "@/components/SlipBuilderPanel";
 import { getUser, isLoggedIn, clearAuth, isAdmin, AuthUser } from "@/lib/auth";
@@ -49,6 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const isMobile = useIsMobile();
   const [credits, setCredits] = useState<Credits | null>(null);
   const [schedule, setSchedule] = useState<ScheduleInfo | null>(null);
+  const [status, setStatus] = useState<StatusInfo | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -60,6 +61,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     setAuthChecked(true);
     api.credits().then(setCredits).catch(() => {});
     api.schedule().then(setSchedule).catch(() => {});
+    api.status().then(setStatus).catch(() => {});
   }, [pathname, router]);
 
   // Close mobile menu on navigation
@@ -88,6 +90,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   }
 
   function handleLogout() { clearAuth(); router.push("/login"); }
+
+  function renderStatusBanner() {
+    if (!status || status.healthy) return null;
+    return (
+      <div style={{
+        padding: "10px 14px", borderRadius: 6,
+        background: "#2d1e1e", border: "1px solid var(--red)", color: "var(--red)",
+        marginBottom: 16, fontSize: 13,
+      }}>
+        <strong>⚠️ Data may be stale or incomplete:</strong>
+        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          {status.problems.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      </div>
+    );
+  }
 
   // ── Mobile Layout ──
   if (isMobile) {
@@ -166,6 +184,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
             {/* Main content — padded for top bar + bottom nav */}
             <main style={{ padding: "16px 12px", paddingBottom: 80, minHeight: "calc(100vh - 48px)" }}>
+              {renderStatusBanner()}
               {children}
             </main>
 
@@ -305,6 +324,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
           <SlipBuilderProvider>
             <main style={{ flex: 1, overflow: "auto", padding: "24px 28px" }}>
+              {renderStatusBanner()}
               {children}
             </main>
             <SlipBuilderPanel />

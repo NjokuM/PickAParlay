@@ -175,6 +175,24 @@ def init_db() -> None:
                 ON graded_props(player_name, market, line, side, game_date);
             CREATE INDEX IF NOT EXISTS idx_graded_props_date
                 ON graded_props(game_date);
+
+            -- Persisted history of every background job run (refresh, results
+            -- check, alt-refresh, ladder build) — survives process restarts,
+            -- unlike the in-memory _refresh_state / _results_state dicts.
+            CREATE TABLE IF NOT EXISTS job_runs (
+                id            INTEGER PRIMARY KEY,
+                job_name      TEXT NOT NULL,   -- "refresh" | "results" | "alt_refresh" | "ladder"
+                trigger       TEXT NOT NULL,   -- "cron" | "manual" | "startup"
+                status        TEXT NOT NULL,   -- "running" | "done" | "error" | "skipped" | "no_games" | "no_props"
+                started_at    TEXT NOT NULL,
+                finished_at   TEXT,
+                detail        TEXT,
+                error         TEXT,
+                props_total   INTEGER,
+                props_graded  INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_job_runs_job_name
+                ON job_runs(job_name, started_at);
         """)
 
         # Users table — for auth & multi-user support
@@ -260,6 +278,64 @@ def get_latest_run_id() -> int | None:
             "SELECT id FROM grading_runs ORDER BY run_at DESC LIMIT 1"
         ).fetchone()
         return row["id"] if row else None
+
+
+# ---------------------------------------------------------------------------
+# Job runs — persisted history of background jobs (refresh, results check,
+# alt-refresh, ladder build). Unlike the in-memory *_state dicts in
+# backend/app.py, these survive a process restart, so "what happened on the
+# last scheduled run" is always answerable even after an OOM kill or deploy.
+# ---------------------------------------------------------------------------
+
+def start_job_run(job_name: str, trigger: str = "manual") -> int:
+    """Record the start of a background job. Returns the new run ID."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO job_runs (job_name, trigger, status, started_at)
+               VALUES (?, ?, 'running', ?)""",
+            (job_name, trigger, datetime.utcnow().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def finish_job_run(
+    run_id: int,
+    status: str,
+    detail: str | None = None,
+    error: str | None = None,
+    props_total: int | None = None,
+    props_graded: int | None = None,
+) -> None:
+    """Record the terminal state of a background job (done/error/skipped/no_games/no_props)."""
+    with _connect() as conn:
+        conn.execute(
+            """UPDATE job_runs
+               SET status=?, finished_at=?, detail=?, error=?, props_total=?, props_graded=?
+               WHERE id=?""",
+            (
+                status, datetime.utcnow().isoformat(), detail, error,
+                props_total, props_graded, run_id,
+            ),
+        )
+
+
+def get_latest_job_run(job_name: str) -> dict | None:
+    """Return the most recent run for a given job_name, or None if it has never run."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM job_runs WHERE job_name = ? ORDER BY started_at DESC LIMIT 1",
+            (job_name,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_recent_job_runs(limit: int = 30) -> list[dict]:
+    """Return the most recent job runs across all job types, newest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM job_runs ORDER BY started_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

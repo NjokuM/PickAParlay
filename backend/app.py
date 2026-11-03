@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import config
+import src.alerts as alerts
 import src.cache as cache
 import src.database as database
 from src.api import injury_api, nba_stats, odds_api
@@ -81,7 +82,7 @@ def _scheduled_grade_results() -> None:
             return
 
     t = threading.Thread(
-        target=_run_results_background, args=(yesterday_et,), daemon=True
+        target=_run_results_background, args=(yesterday_et,), kwargs={"trigger": "cron"}, daemon=True
     )
     t.start()
 
@@ -103,7 +104,7 @@ def _scheduled_grade_results_tonight() -> None:
     for game_date in [today_et, yesterday_et]:
         print(f"[cron-night] Grading results for {game_date}")
         t = threading.Thread(
-            target=_run_results_background, args=(game_date,), daemon=True
+            target=_run_results_background, args=(game_date,), kwargs={"trigger": "cron"}, daemon=True
         )
         t.start()
         t.join(timeout=300)  # wait up to 5 min per date before moving on
@@ -115,7 +116,14 @@ def _scheduled_refresh() -> None:
     pool = get_pool_credits()
     remaining = pool["remaining"]
     if remaining < 50:
-        print(f"[cron] Only {remaining} credits remaining across {pool['total_keys']} keys — skipping")
+        detail = f"Only {remaining} credits remaining across {pool['total_keys']} keys"
+        print(f"[cron] {detail} — skipping scheduled refresh")
+        run_id = database.start_job_run("refresh", trigger="cron")
+        database.finish_job_run(run_id, status="skipped", detail=detail)
+        alerts.send_alert(
+            "Scheduled refresh SKIPPED — low credits",
+            f"{detail}. No new props were fetched; today's board may be stale or empty.",
+        )
         return
 
     with _refresh_lock:
@@ -125,7 +133,7 @@ def _scheduled_refresh() -> None:
 
     print(f"[cron] Starting scheduled refresh (credits remaining: {remaining})")
     t = threading.Thread(
-        target=_run_refresh_background, args=(config.DEFAULT_SEASON,), daemon=True
+        target=_run_refresh_background, args=(config.DEFAULT_SEASON,), kwargs={"trigger": "cron"}, daemon=True
     )
     t.start()
 
@@ -188,8 +196,10 @@ _refresh_state: dict = {
 _refresh_lock = threading.Lock()
 
 
-def _run_refresh_background(season: str) -> None:
+def _run_refresh_background(season: str, trigger: str = "manual") -> None:
     global _refresh_state
+
+    job_run_id = database.start_job_run("refresh", trigger=trigger)
 
     with _refresh_lock:
         _refresh_state.update(
@@ -214,6 +224,7 @@ def _run_refresh_background(season: str) -> None:
                     finished_at=datetime.utcnow().isoformat(),
                     status="no_games",
                 )
+            database.finish_job_run(job_run_id, status="no_games", detail="No NBA games tonight")
             return
 
         def _log(msg: str, detail: str = "") -> None:
@@ -291,6 +302,9 @@ def _run_refresh_background(season: str) -> None:
                     finished_at=datetime.utcnow().isoformat(),
                     status="no_props",
                 )
+            detail = f"Matched {matched_games}/{len(games)} games to Odds API but got 0 props"
+            database.finish_job_run(job_run_id, status="no_props", detail=detail)
+            alerts.send_alert("Scheduled refresh returned 0 props", detail)
             return
 
         # 4a. Pre-warm cache — fetch ALL data upfront in parallel
@@ -460,6 +474,7 @@ def _run_refresh_background(season: str) -> None:
         )
 
         with _refresh_lock:
+            props_total_seen = _refresh_state.get("props_total", graded_count)
             _refresh_state.update(
                 running=False,
                 finished_at=datetime.utcnow().isoformat(),
@@ -467,6 +482,12 @@ def _run_refresh_background(season: str) -> None:
                 props_graded=graded_count,
                 run_id=run_id,
             )
+        database.finish_job_run(
+            job_run_id, status="done",
+            detail=f"{graded_count} graded props ({above_threshold} above threshold) from {len(games)} games",
+            props_total=props_total_seen,
+            props_graded=graded_count,
+        )
 
     except Exception as exc:
         with _refresh_lock:
@@ -476,6 +497,11 @@ def _run_refresh_background(season: str) -> None:
                 status="error",
                 error=str(exc),
             )
+        database.finish_job_run(job_run_id, status="error", error=str(exc))
+        alerts.send_alert(
+            "Scheduled refresh FAILED",
+            f"trigger={trigger}, season={season}\n{exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1118,6 +1144,65 @@ def get_schedule() -> dict:
     }
 
 
+@app.get("/api/status")
+def get_status() -> dict:
+    """
+    Consolidated health signal, built from PERSISTED job_runs rather than the
+    in-memory *_state dicts alone — so it still answers correctly even if the
+    process restarted mid-job and the in-memory state was lost.
+
+    This is what the frontend status banner reads. It answers the exact
+    question "why are there no picks right now": did the last scheduled
+    refresh fail / get skipped / hang, are credits low, or is there simply
+    no cached data for today.
+    """
+    STALE_RUNNING_MINUTES = 30
+
+    def _summarize(job_name: str) -> dict | None:
+        run = database.get_latest_job_run(job_name)
+        if not run:
+            return None
+        run = dict(run)
+        if run["status"] == "running":
+            started = datetime.fromisoformat(run["started_at"])
+            age_minutes = (datetime.utcnow() - started).total_seconds() / 60
+            if age_minutes > STALE_RUNNING_MINUTES:
+                run["status"] = "stalled"
+                run["detail"] = (
+                    f"Still 'running' after {age_minutes:.0f} min — "
+                    "the process likely crashed or restarted mid-job."
+                )
+        return run
+
+    refresh_run = _summarize("refresh")
+    results_run = _summarize("results")
+    alt_run = _summarize("alt_refresh")
+
+    pool = get_pool_credits()
+    today_has_props = bool(cache.load_scored_props_raw())
+
+    problems: list[str] = []
+    if refresh_run and refresh_run["status"] in ("error", "skipped", "stalled", "no_props"):
+        problems.append(
+            f"Last refresh ({refresh_run['trigger']} @ {refresh_run['started_at']}): "
+            f"{refresh_run['status']} — {refresh_run.get('detail') or refresh_run.get('error') or ''}"
+        )
+    if not today_has_props:
+        problems.append("No props cached for today yet.")
+    if pool["remaining"] < 50:
+        problems.append(f"Odds API credits low: {pool['remaining']} remaining.")
+
+    return {
+        "healthy": not problems,
+        "problems": problems,
+        "today_has_props": today_has_props,
+        "credits_remaining": pool["remaining"],
+        "last_refresh": refresh_run,
+        "last_results_check": results_run,
+        "last_alt_refresh": alt_run,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Custom Prop Grader
 # ---------------------------------------------------------------------------
@@ -1308,6 +1393,8 @@ def _run_alt_refresh_background(season: str) -> None:
     """
     global _alt_refresh_state
 
+    job_run_id = database.start_job_run("alt_refresh", trigger="manual")
+
     with _alt_refresh_lock:
         _alt_refresh_state.update(
             running=True,
@@ -1411,8 +1498,11 @@ def _run_alt_refresh_background(season: str) -> None:
                 status="done",
                 props_graded=len(all_valued_props),
             )
+        database.finish_job_run(job_run_id, status="done", props_graded=len(all_valued_props))
 
     except Exception as exc:
+        database.finish_job_run(job_run_id, status="error", error=str(exc))
+        alerts.send_alert("Alt-lines refresh FAILED", str(exc))
         with _alt_refresh_lock:
             _alt_refresh_state.update(
                 running=False,
@@ -1638,9 +1728,11 @@ _results_state: dict = {
 _results_lock = threading.Lock()
 
 
-def _run_results_background(game_date: str) -> None:
+def _run_results_background(game_date: str, trigger: str = "manual") -> None:
     """Fetch box scores for game_date and grade all unresolved saved prop legs."""
     global _results_state
+
+    job_run_id = database.start_job_run("results", trigger=trigger)
 
     with _results_lock:
         _results_state.update(
@@ -1671,6 +1763,10 @@ def _run_results_background(game_date: str) -> None:
                 games_in_progress=summary.get("games_in_progress", 0),
                 games_not_started=summary.get("games_not_started", 0),
             )
+        database.finish_job_run(
+            job_run_id, status="done",
+            detail=f"{game_date}: {summary['checked']} checked, {summary['hit']} hit, {summary['miss']} miss",
+        )
     except Exception as exc:
         with _results_lock:
             _results_state.update(
@@ -1678,6 +1774,11 @@ def _run_results_background(game_date: str) -> None:
                 finished_at=datetime.utcnow().isoformat(),
                 error=str(exc),
             )
+        database.finish_job_run(job_run_id, status="error", error=str(exc))
+        alerts.send_alert(
+            "Results check FAILED",
+            f"game_date={game_date}, trigger={trigger}\n{exc}",
+        )
 
 
 @app.post("/api/results/check")

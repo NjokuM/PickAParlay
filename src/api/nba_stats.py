@@ -34,6 +34,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.cache import get as cache_get, set as cache_set
 from src.models import NBAGame
+from src.retry import retry_call
 
 
 def _sleep() -> None:
@@ -104,13 +105,33 @@ def get_todays_games(force_fresh: bool = False) -> list[NBAGame]:
             return [NBAGame(**g) for g in cached]
 
     _sleep()
-    try:
+
+    def _fetch_board() -> ScoreboardV3:
         # ScoreboardV2 is broken for the 2025-26 playoff season — use V3.
-        board = ScoreboardV3(game_date=date_str, league_id="00")
+        return ScoreboardV3(game_date=date_str, league_id="00")
+
+    board = retry_call(
+        _fetch_board,
+        max_attempts=3,
+        base_delay=1.0,
+        retry_on=(Exception,),
+        on_retry=lambda attempt, exc: print(
+            f"[nba-api] ⚠️ get_todays_games attempt {attempt}/3 failed ({exc}) — retrying…"
+        ),
+    )
+    if board is None:
+        # Every attempt failed — this is a stats.nba.com outage/rate-limit, NOT
+        # "no games tonight". Surface it distinctly so the refresh pipeline
+        # doesn't silently treat it as an off-day.
+        print("[nba-api] ❌ get_todays_games: stats.nba.com unreachable after 3 attempts")
+        raise RuntimeError("stats.nba.com unreachable (ScoreboardV3 failed after 3 attempts)")
+
+    try:
         games_df = board.data_sets[1].get_data_frame()   # game_header
         teams_df = board.data_sets[2].get_data_frame()   # team rows (2 per game)
-    except Exception:
-        return []
+    except Exception as exc:
+        print(f"[nba-api] ❌ get_todays_games: malformed ScoreboardV3 response ({exc})")
+        raise RuntimeError(f"Malformed ScoreboardV3 response: {exc}") from exc
 
     results: list[NBAGame] = []
     for _, row in games_df.iterrows():

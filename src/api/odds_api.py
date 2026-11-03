@@ -28,6 +28,7 @@ from src.cache import (
     get_credits_remaining,
 )
 from src.models import NBAGame, PlayerProp
+from src.retry import retry_call
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,39 @@ _load_pool_state()
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _request_with_retry(url: str, params: dict, max_attempts: int = 3) -> requests.Response | None:
+    """
+    GET with retry + exponential backoff (1s, 3s, 9s) for TRANSIENT failures only:
+    connection errors, timeouts, 429 rate limits, and 5xx server errors.
+
+    Permanent failures (401/403 — bad or exhausted key) are returned as-is so the
+    caller's existing key-rotation logic in _get() can handle them; they are not
+    retried here. Without this, a single dropped connection or momentary rate
+    limit used to turn into an empty events/props list for the whole refresh.
+    """
+    def _attempt() -> requests.Response:
+        return requests.get(url, params=params, timeout=15)
+
+    def _is_transient_failure(resp: requests.Response) -> bool:
+        return resp.status_code == 429 or resp.status_code >= 500
+
+    def _log_retry(attempt: int, exc: BaseException | None) -> None:
+        reason = f"{exc}" if exc else "rate limited / server error"
+        print(f"[odds-api] ⚠️ Attempt {attempt}/{max_attempts} failed ({reason}) — retrying…")
+
+    result = retry_call(
+        _attempt,
+        max_attempts=max_attempts,
+        base_delay=1.0,
+        retry_on=(requests.RequestException,),
+        should_retry=_is_transient_failure,
+        on_retry=_log_retry,
+    )
+    if result is None:
+        print(f"[odds-api] ❌ Request failed after {max_attempts} attempts: {url}")
+    return result
+
+
 def _get(path: str, params: dict) -> dict | list | None:
     """Make a GET request to The Odds API using the best available key."""
     with _pool_lock:
@@ -167,7 +201,9 @@ def _get(path: str, params: dict) -> dict | list | None:
     params.setdefault("oddsFormat", "decimal")
     url = f"{config.ODDS_API_BASE_URL}{path}"
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        resp = _request_with_retry(url, params)
+        if resp is None:
+            return None
         # Sync credit counter from response headers
         raw_used = resp.headers.get("x-requests-used")
         raw_remaining = resp.headers.get("x-requests-remaining")
