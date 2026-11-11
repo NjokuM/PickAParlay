@@ -28,8 +28,14 @@ env/
 *.swp
 *.swo
 
-# Claude dev config (local only)
-.claude/
+# Claude dev config (local only) — except checked-in, shareable skills.
+# Note: a plain ".claude/" exclusion stops git from ever looking inside it,
+# so later "!" negations for paths underneath would be silently ignored —
+# ".claude/*" (not "/") is required for the negations below to actually work.
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/pick-analysis/
 
 # SQLite database (runtime data, not source)
 *.db
