@@ -42,3 +42,7 @@ frontend/node_modules/
 
 # Research data (re-fetchable from APIs)
 research/**/.data/
+
+# Test coverage data
+.coverage
+htmlcov/
