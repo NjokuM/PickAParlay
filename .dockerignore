@@ -17,3 +17,18 @@ __pycache__
 
 # Plans
 .claude
+
+# Tests and research (not needed in the production image)
+**/test_*.py
+**/*.test.ts
+**/*.test.tsx
+conftest.py
+**/conftest.py
+testkit.py
+research
+requirements-dev.txt
+pytest.ini
+.coveragerc
+frontend/test-utils.tsx
+frontend/vitest.config.ts
+frontend/vitest.setup.ts
