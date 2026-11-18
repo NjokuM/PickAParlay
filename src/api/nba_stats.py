@@ -498,47 +498,6 @@ def get_league_player_totals(season: str | None = None) -> pd.DataFrame:
 # Team stats / pace
 # ---------------------------------------------------------------------------
 
-def get_team_stats(season: str | None = None) -> pd.DataFrame:
-    """League-wide team stats including pace. Cached 24h."""
-    if season is None:
-        season = config.DEFAULT_SEASON
-    cache_key = f"team_stats_{season}"
-    cached = cache_get(cache_key, config.CACHE_TTL["team_stats"])
-    if cached:
-        return pd.DataFrame(cached)
-
-    _sleep()
-    try:
-        stats = LeagueDashTeamStats(
-            season=season,
-            per_mode_simple="PerGame",
-        )
-        df = stats.league_dash_team_stats.get_data_frame()
-    except Exception:
-        return pd.DataFrame()
-
-    cache_set(cache_key, df.to_dict(orient="records"))
-    return df
-
-
-def get_team_pace_rank(team_id: int, season: str | None = None) -> tuple[float, int] | None:
-    """Return (pace_value, pace_rank) for a team. Rank 1 = fastest."""
-    if season is None:
-        season = config.DEFAULT_SEASON
-    df = get_team_stats(season)
-    if df.empty or "TEAM_ID" not in df.columns:
-        return None
-
-    row = df[df["TEAM_ID"] == team_id]
-    if row.empty:
-        return None
-
-    pace = float(row.iloc[0].get("PACE", 0))
-    df_sorted = df.sort_values("PACE", ascending=False).reset_index(drop=True)
-    rank = int(df_sorted[df_sorted["TEAM_ID"] == team_id].index[0]) + 1
-    return pace, rank
-
-
 # ---------------------------------------------------------------------------
 # Team defensive stats (opponent stats allowed per game)
 # ---------------------------------------------------------------------------
