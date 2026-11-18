@@ -2,14 +2,28 @@
 # Required secret: FLY_API_TOKEN  (Settings → Secrets → Actions)
 # Generate at: https://fly.io/user/personal_access_tokens
 
-name: Fly Deploy
+name: Test & Deploy
 on:
   push:
-    branches:
-      - main
+  pull_request:
 jobs:
+  test-backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: pytest (fails under 80% coverage)
+        run: python -m pytest --cov --cov-config=.coveragerc --cov-fail-under=80 -p no:warnings
+
   deploy:
     name: Deploy app
+    needs: [test-backend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: deploy-group    # one deploy at a time
     steps:
