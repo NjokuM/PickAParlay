@@ -29,3 +29,6 @@ research
 requirements-dev.txt
 pytest.ini
 .coveragerc
+frontend/test-utils.tsx
+frontend/vitest.config.ts
+frontend/vitest.setup.ts
