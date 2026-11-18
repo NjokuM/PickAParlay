@@ -650,7 +650,7 @@ def history_cmd(limit: int) -> None:
 
     # Aggregate analytics
     analytics = database.get_analytics()
-    overall = analytics.get("overall", {})
+    overall = analytics.get("slips", {})
     if overall.get("total_slips", 0) > 0:
         pnl = overall["total_pnl"]
         pnl_col = "green" if pnl >= 0 else "red"
